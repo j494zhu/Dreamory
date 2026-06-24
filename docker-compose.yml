@@ -1,0 +1,22 @@
+# Spins up Postgres 16 with the pgvector extension preinstalled.
+# Bring it up with:  docker compose up -d
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: dreamory-db
+    environment:
+      POSTGRES_USER: dreamory
+      POSTGRES_PASSWORD: dreamory
+      POSTGRES_DB: dreamory
+    ports:
+      - "5432:5432"
+    volumes:
+      - dreamory_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dreamory -d dreamory"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  dreamory_pgdata:

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dreamory · 情绪感知伴侣</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- ── Sidebar: chats ─────────────────────────────── -->
+    <aside id="sidebar">
+      <div class="brand">
+        <span class="logo">❀</span>
+        <div>
+          <h1>Dreamory</h1>
+          <p>情绪感知 · 层级记忆</p>
+        </div>
+      </div>
+      <button id="new-chat-btn" class="primary">＋ 新对话</button>
+      <div id="chat-list"></div>
+      <div class="sidebar-footer">
+        <span id="backend-badge" class="badge">…</span>
+      </div>
+    </aside>
+
+    <!-- ── Center: conversation ───────────────────────── -->
+    <main id="chat-pane">
+      <header id="chat-header">
+        <div>
+          <h2 id="chat-title">选择或新建一个对话</h2>
+          <p id="chat-goal" class="muted"></p>
+        </div>
+        <div id="mode-pill" class="pill hidden">neutral</div>
+      </header>
+
+      <div id="messages"></div>
+
+      <form id="composer" class="hidden">
+        <input id="msg-input" type="text" placeholder="说点什么…" autocomplete="off" />
+        <button type="submit" class="primary">发送</button>
+      </form>
+    </main>
+
+    <!-- ── Right: debug / brain theatre ───────────────── -->
+    <aside id="debug-pane">
+      <h3>脑内剧场 <span class="muted">(debug)</span></h3>
+
+      <section class="card">
+        <h4>💭 内心活动 <span class="muted">thinking</span></h4>
+        <p id="dbg-thinking" class="thinking">—</p>
+      </section>
+
+      <section class="card">
+        <h4>情绪标量</h4>
+        <div class="gauge"><label>arousal 激动</label><div class="bar"><i id="g-arousal"></i></div></div>
+        <div class="gauge"><label>security 安全感</label><div class="bar"><i id="g-security"></i></div></div>
+        <div class="gauge"><label>patience 耐心</label><div class="bar"><i id="g-patience"></i></div></div>
+        <div class="kv"><span>warm_streak</span><b id="g-warm">0</b></div>
+      </section>
+
+      <section class="card">
+        <h4>事件分类 <span class="muted">LLM①</span></h4>
+        <pre id="dbg-events">—</pre>
+      </section>
+
+      <section class="card">
+        <h4>动力学轨迹 <span class="muted">pure code</span></h4>
+        <ul id="dbg-trace" class="trace"></ul>
+      </section>
+
+      <section class="card">
+        <h4>🪢 挂起回路 / 旧账</h4>
+        <ul id="dbg-loops" class="loops"></ul>
+      </section>
+
+      <section class="card">
+        <h4>L1 检索命中 <span class="muted">VectorDB</span></h4>
+        <ul id="dbg-retrieved" class="retrieved"></ul>
+        <div class="kv"><span>L1 tokens</span><b id="dbg-tokens">0</b></div>
+        <div class="kv"><span>tags 命中</span><b id="dbg-tags">—</b></div>
+      </section>
+    </aside>
+  </div>
+
+  <!-- ── New chat modal ───────────────────────────────── -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <h3>新对话</h3>
+      <label>标题<input id="m-title" type="text" value="和小雨的对话" /></label>
+      <label>性格预设
+        <select id="m-preset">
+          <option value="anxious">焦虑型 (anxious)</option>
+          <option value="secure">安全型 (secure)</option>
+          <option value="avoidant">回避型 (avoidant)</option>
+        </select>
+      </label>
+      <label>当前目标 (可选, 用于检索偏置)
+        <input id="m-goal" type="text" placeholder="例如:修复昨晚的争吵" />
+      </label>
+      <div class="modal-actions">
+        <button id="m-cancel">取消</button>
+        <button id="m-create" class="primary">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
