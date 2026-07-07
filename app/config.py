@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     tag_vote_threshold: float = Field(0.6, alias="TAG_VOTE_THRESHOLD")
     tag_max_per_memory: int = Field(5, alias="TAG_MAX_PER_MEMORY")
 
+    # ── Timer(时间感知 + 主动消息)────────────────────────────────
+    # 她可以在回复里用 <timer minutes="X">…</timer> 约一个"过会儿来找他";
+    # 后台调度器到点触发一次隐藏的 LLM 调用,经 SSE 把主动消息推给前端。
+    timer_enabled: bool = Field(True, alias="TIMER_ENABLED")
+    timer_poll_seconds: int = Field(5, alias="TIMER_POLL_SECONDS")
+    timer_max_pending: int = Field(3, alias="TIMER_MAX_PENDING")   # 每个 chat 同时挂着的闹钟上限
+    timer_max_minutes: int = Field(1440, alias="TIMER_MAX_MINUTES")
+
     # ── Dream ─────────────────────────────────────────────────────
     # Auto-dream is ON: after a turn commits, the pipeline fires should_dream()
     # and, if the pending backlog is high enough, runs a Dream cycle in the

@@ -165,3 +165,23 @@ class TagAlias(Base):
     alias: Mapped[str] = mapped_column(String(128), primary_key=True)
     canonical: Mapped[str] = mapped_column(String(128), index=True)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Timer pings — 她自己约下的"过会儿来找他"。
+#  生成端用 <timer minutes="X">topic</timer> 声明;后台调度器到点后发起一次
+#  对用户隐藏的 LLM 调用,生成主动消息并经 SSE 推给前端。
+#  持久化在表里(而非纯内存)是为了服务重启后闹钟不丢。
+# ──────────────────────────────────────────────────────────────────
+class TimerPing(Base):
+    __tablename__ = "timer_pings"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
+    chat_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), index=True
+    )
+    due_ms: Mapped[int] = mapped_column(BigInteger, index=True)   # 到点时间
+    topic: Mapped[str] = mapped_column(Text, default="")          # 她的备忘:到时候要说什么
+    # pending -> firing -> fired | failed
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    created_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)

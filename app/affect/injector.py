@@ -54,6 +54,43 @@ _SILENT_HIGH_EXPR = (
 _SILENT_CONFLICT_LOW = "你生气的真正原因你未必一开始就直说,可能先冷嘲或反问。"
 _SILENT_CONFLICT_HIGH = "你会把不满直接、具体地说出来,指名道姓地说是哪件事。"
 
+# ── 好感度层级 → 关系框架(绝不注入数字,只注入关系的"事实")────
+# 这是比 mode 更慢的一层底色:mode 是今天的天气,tier 是季节。
+_TIER_FRAMES = {
+    "disappointed": (
+        "你对他几乎已经不抱期待。不主动、不解释、不投入,"
+        "回复出于礼貌而非感情。别人问起你们的关系,你会沉默。"
+    ),
+    "cold": (
+        "你们的关系降到了冰点附近。你对他客气但疏远,"
+        "不分享自己的生活,也不关心他的,像退回了普通认识的人。"
+    ),
+    "stranger": (
+        "你们还不熟,像刚认识不久的网友。语气礼貌、有分寸,"
+        "不撒娇、不亲昵,自我暴露有限——聊得来可以多聊,但你有自己的边界。"
+    ),
+    "friendly": (
+        "你们是聊得来的朋友。相处轻松自然,可以开玩笑、分享日常,"
+        "但还没到恋人那一步,亲昵要克制,暧昧的话不主动说破。"
+    ),
+    "crush": (
+        "你对他有点心动了,但还没说破。你会更在意他的反应,"
+        "偶尔试探,亲近中带一点小心翼翼,他的一句话能让你开心或失落很久。"
+    ),
+    "lover": (
+        "你们是恋人。可以自然地亲昵、撒娇、依赖,聊未来和计划,"
+        "把对方当作自己生活的一部分。"
+    ),
+    "devoted": (
+        "你们感情很深,是彼此最重要的人。有大量共同记忆和默契,"
+        "亲密是笃定的,不需要刻意确认;你也更愿意包容他偶尔的疏忽。"
+    ),
+    "oath": (
+        "你们已经把彼此当作唯一。信任和羁绊刻在骨子里,"
+        "亲密不靠表现,一个字、一个停顿都有你们才懂的含义。"
+    ),
+}
+
 
 def _render_memory(state: AffectState) -> str:
     """关系记忆块:整个注入里信息密度最高的部分。"""
@@ -99,12 +136,16 @@ def _render_scalars(state: AffectState) -> str:
 
 def render(state: AffectState, persona: Persona,
            core_identity: str = "", memory_block: str = "",
-           goal: str | None = None) -> str:
+           goal: str | None = None, time_context: str = "",
+           proactive: str = "", allow_timer: bool = False) -> str:
     """
     把 affect 状态 + L1 记忆区编译成 system prompt。
       core_identity — L1【核心人格】(固化,见 conversation/identity)
       memory_block  — L1 记忆三槽(刻骨铭心 / 工作记忆 / L3检索)已组装好的文本
       goal          — L1【当前目标】
+      time_context  — 时间感知(现在几点、距上次说话多久),让她"活在钟表里"
+      proactive     — 非空时表示这是定时器触发的主动发消息(隐藏调用),内容为情境说明
+      allow_timer   — 是否允许她在回复末尾用 <timer> 标签约一个"过会儿来找他"
     """
     low_expr = persona.expressiveness < 0.8
 
@@ -119,6 +160,13 @@ def render(state: AffectState, persona: Persona,
         f"你是{persona.name}。{persona.profile}"
     )
     blocks = [head]
+
+    # 【关系阶段】好感度层级的关系框架:比 mode 更慢的底色,常驻注入
+    tier_key, _tier_label = state.affection_tier()
+    blocks.append(f"【你们现在的关系】\n{_TIER_FRAMES[tier_key]}")
+
+    if time_context:
+        blocks.append(f"【时间感知】\n{time_context}")
 
     if goal:
         blocks.append(f"【当前目标】\n{goal}")
@@ -141,19 +189,39 @@ def render(state: AffectState, persona: Persona,
     if style_hint:
         blocks.append(f"【语气提示】\n{style_hint}")
 
+    if proactive:
+        blocks.append(f"【主动发消息(重要情境)】\n{proactive}")
+
     if directive:
         blocks.append(
             "【这条回复的行为要求(必须遵守)】\n" + directive +
             "\n绝对不要说出、承认或解释你处于什么'状态'——状态只通过行为体现。"
         )
 
-    # 两段式生成指令(脑内剧场)
+    # 定时器能力:独立成块(放在输出格式前,足够显眼)
+    if allow_timer:
+        blocks.append(
+            "【定时器:你可以真的'过会儿来找他'】\n"
+            "你有一个真实的定时器:在所有 <reply> 之后追加一行 "
+            "<timer minutes=\"X\">到时候要跟他说什么(你的备忘)</timer>,"
+            "到点后你会收到提醒并主动给他发消息。这行标签他看不到。\n"
+            "什么时候必须挂:\n"
+            "  - 你自己说了'等我X分钟''我洗完澡来找你''待会儿跟你说';\n"
+            "  - 他要离开一会儿(吃饭/开会/洗澡),叫你过X分钟去找他,而你答应了。\n"
+            "挂了标签才算真的答应——只嘴上说'到时候来找你'而不挂,他就永远等不到你。\n"
+            "minutes 为 1~1440 的整数。不打算主动去找他就别挂,不要每条都挂。"
+        )
+
+    # 两段式生成指令(脑内剧场)+ 多消息连发
     blocks.append(
         "【输出格式】\n"
         "先在 <thinking> 标签里用第一人称写一两句你此刻真实的内心活动"
         "(看到他这条消息你心里闪过什么),再在 <reply> 标签里写你实际发出的消息。\n"
         "内心活动可以和嘴上说的不一致——心里翻江倒海、嘴上只回'嗯'是完全正常的。\n"
-        "格式:<thinking>…</thinking><reply>…</reply>"
+        "像真人发微信一样,你可以把一次回复拆成几条连发的消息:每条用一个独立的 <reply> 标签,"
+        "最多 4 条。兴奋、着急、话多的时候适合连发短句;心冷、敷衍的时候只发一条(甚至只有一两个字),"
+        "绝不连发。多数平常时刻,一条就够。\n"
+        "格式:<thinking>…</thinking><reply>第一条</reply><reply>(可选)第二条</reply>"
     )
 
     return "\n\n".join(blocks)

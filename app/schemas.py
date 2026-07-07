@@ -53,7 +53,8 @@ class MessageIn(BaseModel):
 
 class MessageOut(BaseModel):
     role: str
-    content: str
+    content: str                       # 向后兼容:多条消息用 \n 拼接
+    messages: list[str] = []           # 连发消息,前端逐条渲染
     debug: dict | None = None
 
 

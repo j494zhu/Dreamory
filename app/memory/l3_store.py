@@ -92,12 +92,13 @@ async def get_by_ids(
 async def working_memory( # 拿最近k条原始记忆
     session: AsyncSession, chat_id: uuid.UUID, k: int
 ) -> list[Memory]:
-    """Most recent k messages for this chat, oldest→newest (FIFO window = L1 工作记忆)."""
+    """Most recent k messages for this chat, oldest→newest (FIFO window = L1 工作记忆).
+    连发消息可能落在同一毫秒,用 uuid7 主键(带毫秒内序列)兜底保序。"""
     rows = (
         await session.execute(
             select(Memory)
             .where(Memory.chat_id == chat_id, Memory.kind == MemoryKind.message)
-            .order_by(Memory.ts_ms.desc())
+            .order_by(Memory.ts_ms.desc(), Memory.id.desc())
             .limit(k)
         )
     ).scalars().all()

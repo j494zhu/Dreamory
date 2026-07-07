@@ -30,6 +30,7 @@
         <div>
           <h2 id="chat-title">选择或新建一个对话</h2>
           <p id="chat-goal" class="muted"></p>
+          <p id="timer-hint" class="muted timer-hint hidden"></p>
         </div>
         <div id="mode-pill" class="pill hidden">neutral</div>
       </header>
@@ -57,6 +58,13 @@
         <div class="gauge"><label>security 安全感</label><div class="bar"><i id="g-security"></i></div></div>
         <div class="gauge"><label>patience 耐心</label><div class="bar"><i id="g-patience"></i></div></div>
         <div class="kv"><span>warm_streak</span><b id="g-warm">0</b></div>
+      </section>
+
+      <section class="card">
+        <h4>💗 好感度 <span class="muted">0~200 · 50陌生 100恋人</span></h4>
+        <div class="gauge"><div class="bar"><i id="g-affection" class="affection"></i></div></div>
+        <div class="kv"><span>数值</span><b id="g-aff-val">—</b></div>
+        <div class="kv"><span>关系阶段</span><b id="g-aff-tier">—</b></div>
       </section>
 
       <section class="card">
@@ -90,9 +98,13 @@
       <label>标题<input id="m-title" type="text" value="和小雨的对话" /></label>
       <label>性格预设
         <select id="m-preset">
-          <option value="anxious">焦虑型 (anxious)</option>
-          <option value="secure">安全型 (secure)</option>
-          <option value="avoidant">回避型 (avoidant)</option>
+          <option value="anxious">焦虑型 (anxious) · 恋人</option>
+          <option value="secure">安全型 (secure) · 恋人</option>
+          <option value="avoidant">回避型 (avoidant) · 恋人</option>
+          <option value="tsundere">傲娇 · 阿绫 · 恋人</option>
+          <option value="cool">高冷 · 姜黎 · 心动</option>
+          <option value="playful">元气 · 糖糖 · 朋友</option>
+          <option value="clingy">黏人 · 团子 · 恋人</option>
         </select>
       </label>
       <label>当前目标 (可选, 用于检索偏置)

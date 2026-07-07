@@ -13,6 +13,11 @@ const api = {
 };
 
 let activeChat = null;
+let eventSource = null;   // 当前对话的 SSE 订阅(主动消息推送通道)
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// 模拟打字耗时:字越多"打"得越久,但封顶,不让用户干等
+const typingDelay = (text) => Math.min(400 + (text || "").length * 45, 2200);
 
 // ── Chats ───────────────────────────────────────────────
 async function loadChats() {
@@ -37,6 +42,7 @@ async function openChat(id) {
   $("#chat-goal").textContent = chat.goal ? `🎯 ${chat.goal}` : "";
   $("#composer").classList.remove("hidden");
   setMode(chat.affect?.mode || "neutral");
+  renderAffection(chat.affect?.affection);
 
   const msgs = await api.get(`/api/chats/${id}/messages`);
   const box = $("#messages");
@@ -46,6 +52,40 @@ async function openChat(id) {
   }
   msgs.forEach((m) => addMessage(m.speaker === "agent" ? "agent" : "user", m.content));
   box.scrollTop = box.scrollHeight;
+
+  subscribeEvents(id);
+  refreshTimerHint();
+}
+
+// ── SSE:她主动发来的消息(定时器到点)从这里进来 ──────────
+function subscribeEvents(id) {
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  eventSource = new EventSource(`/api/chats/${id}/events`);
+  eventSource.onmessage = async (e) => {
+    let payload;
+    try { payload = JSON.parse(e.data); } catch { return; }
+    if (payload.type !== "proactive" || payload.chat_id !== activeChat) return;
+    await playAgentMessages(payload.messages || []);
+    if (payload.mode) setMode(payload.mode);
+    if (payload.thinking) $("#dbg-thinking").textContent = payload.thinking;
+    refreshTimerHint();
+  };
+}
+
+// ── 定时器提示:她说过"过会儿来找你" ──────────────────────
+async function refreshTimerHint() {
+  const el = $("#timer-hint");
+  if (!activeChat || !el) return;
+  try {
+    const timers = await api.get(`/api/chats/${activeChat}/timers`);
+    if (timers.length) {
+      const mins = Math.max(1, Math.round((timers[0].due_ms - Date.now()) / 60000));
+      el.textContent = `⏰ 她说过会儿来找你(约${mins}分钟后)`;
+      el.classList.remove("hidden");
+    } else {
+      el.classList.add("hidden");
+    }
+  } catch { el.classList.add("hidden"); }
 }
 
 // ── Messaging ───────────────────────────────────────────
@@ -61,6 +101,17 @@ function addMessage(role, content, meta) {
   return el;
 }
 
+// 连发消息逐条播放:条与条之间显示"正在输入…",像真人打字的节奏
+async function playAgentMessages(msgs) {
+  for (let i = 0; i < msgs.length; i++) {
+    const typing = addMessage("agent", "…");
+    typing.classList.add("typing");
+    await sleep(i === 0 ? 250 : typingDelay(msgs[i]));
+    typing.remove();
+    addMessage("agent", msgs[i]);
+  }
+}
+
 $("#composer").addEventListener("submit", async (e) => {
   e.preventDefault();
   const input = $("#msg-input");
@@ -72,8 +123,10 @@ $("#composer").addEventListener("submit", async (e) => {
   try {
     const res = await api.post(`/api/chats/${activeChat}/messages`, { content: text });
     typing.remove();
-    addMessage("agent", res.content);
+    const msgs = (res.messages && res.messages.length) ? res.messages : [res.content];
+    await playAgentMessages(msgs);
     if (res.debug) renderDebug(res.debug);
+    refreshTimerHint();
   } catch (err) {
     typing.remove();
     addMessage("agent", "⚠️ " + err.message, "error");
@@ -88,6 +141,22 @@ function setMode(mode) {
   pill.classList.remove("hidden");
 }
 
+// 与后端 app/affect/state.py 的 AFFECTION_TIERS 同一张表
+const AFF_TIERS = [[0, "失望"], [20, "冷淡"], [40, "陌生"], [60, "友好"],
+                   [85, "心动"], [100, "恋人"], [140, "挚爱"], [180, "誓约"]];
+function affTierLabel(v) {
+  let label = AFF_TIERS[0][1];
+  for (const [floor, name] of AFF_TIERS) if (v >= floor) label = name;
+  return label;
+}
+
+function renderAffection(value, tierLabel) {
+  if (value == null) return;
+  setGauge("#g-affection", value / 200);
+  $("#g-aff-val").textContent = Math.round(value);
+  $("#g-aff-tier").textContent = tierLabel || affTierLabel(value);
+}
+
 function renderDebug(d) {
   setMode(d.mode);
   $("#dbg-thinking").textContent = d.thinking || "(无内心独白)";
@@ -98,6 +167,7 @@ function renderDebug(d) {
   setGauge("#g-security", s.security);
   setGauge("#g-patience", (s.patience ?? 0) / 7);
   $("#g-warm").textContent = s.warm_streak ?? 0;
+  renderAffection(s.affection, d.affection_tier?.label);
 
   const trace = $("#dbg-trace");
   trace.innerHTML = "";

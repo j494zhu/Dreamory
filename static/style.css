@@ -116,6 +116,10 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .gauge label { font-size: 11px; color: var(--muted); display: block; margin-bottom: 3px; }
 .bar { background: #0c0e14; border-radius: 6px; height: 8px; overflow: hidden; }
 .bar i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); transition: width .4s; }
+.bar i.affection { background: linear-gradient(90deg, #f78ca0, #f7c873); }
+.timer-hint { color: var(--warm); font-size: 12px; margin-top: 2px; }
+.msg.typing { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: .4; } 50% { opacity: 1; } }
 .kv { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; color: var(--muted); }
 .kv b { color: var(--text); }
 
