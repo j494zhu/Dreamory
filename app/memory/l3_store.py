@@ -89,7 +89,7 @@ async def get_by_ids(
     return {m.id: m for m in rows}
 
 
-async def working_memory(
+async def working_memory( # 拿最近k条原始记忆
     session: AsyncSession, chat_id: uuid.UUID, k: int
 ) -> list[Memory]:
     """Most recent k messages for this chat, oldest→newest (FIFO window = L1 工作记忆)."""

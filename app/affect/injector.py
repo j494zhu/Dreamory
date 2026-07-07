@@ -6,8 +6,13 @@
   3. neutral 模式几乎不注入(保留你"中档不注入"的正确直觉)。
   4. 指令里包含"不直接表达"的策略性沉默 —— 由 persona.expressiveness 调制。
 """
+import random
+
 from .state import AffectState
 from .persona import Persona
+
+# 口癖低频触发概率:不再每轮常驻,只在心情不错时偶尔冒出来才自然。
+STYLE_INJECT_PROB = 0.35
 
 # ── 各模式的行为指令模板 ────────────────────────────────────
 # {silent} 槽位由 expressiveness 决定填入"憋着"还是"说出来"
@@ -55,7 +60,7 @@ def _render_memory(state: AffectState) -> str:
     parts = []
     if state.open_loops:
         items = "\n".join(
-            f"  - {l.content}" + (f"(已经过了{l.sessions_old}天还没下文)" if l.sessions_old else "")
+            f"  - {l.content}" + (f"(隔了{l.sessions_old}次聊天还没下文)" if l.sessions_old else "")
             for l in sorted(state.open_loops, key=lambda x: -x.weight)
         )
         parts.append(f"你心里挂着的事(他还没回应/没兑现):\n{items}")
@@ -66,6 +71,18 @@ def _render_memory(state: AffectState) -> str:
             f"沉淀下来的旧账(平时不提,但被触到或吵架时会翻出来):\n{items}"
         )
     return "\n".join(parts)
+
+
+def _maybe_style(state: AffectState, persona: Persona) -> str:
+    """口癖低频注入:只在心情好(warm/neutral)且低概率命中时提醒带上说话习惯。
+    负面模式下由行为指令接管语气,不注入口癖(冷战/生气时不该俏皮)。"""
+    if not persona.style:
+        return ""
+    if state.mode not in ("warm", "neutral"):
+        return ""
+    if random.random() >= STYLE_INJECT_PROB:
+        return ""
+    return f"这条可以自然带上你平时的说话习惯:{persona.style}"
 
 
 def _render_scalars(state: AffectState) -> str:
@@ -97,8 +114,9 @@ def render(state: AffectState, persona: Persona,
     )
 
     # 【核心人格】固有认知 —— 最顽固、最先注入的一块
+    # 口癖(style)不进固化人格,改由 _maybe_style 低频注入(见下)。
     head = core_identity.strip() if core_identity else (
-        f"你是{persona.name}。{persona.profile}\n{persona.style}"
+        f"你是{persona.name}。{persona.profile}"
     )
     blocks = [head]
 
@@ -117,6 +135,11 @@ def render(state: AffectState, persona: Persona,
     scalars = _render_scalars(state)
     if scalars:
         blocks.append(f"【此刻的状态】\n{scalars}")
+
+    # 口癖低频注入:心情好时偶尔提醒带上说话习惯,不再每轮常驻。
+    style_hint = _maybe_style(state, persona)
+    if style_hint:
+        blocks.append(f"【语气提示】\n{style_hint}")
 
     if directive:
         blocks.append(

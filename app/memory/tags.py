@@ -74,13 +74,13 @@ async def assign_tags(session: AsyncSession, memory: Memory) -> list[str]:
     threshold = settings.tag_vote_threshold
 
     # 1+2. kNN neighbours (same chat), weighted tag vote ---------------------
-    dist = Memory.content_vec.cosine_distance(memory.content_vec)
+    dist = Memory.content_vec.cosine_distance(memory.content_vec) # 当作一个算余弦相似度的函数就好了
     neighbours = (
         await session.execute(
             select(Memory, dist.label("d"))
             .where(
                 Memory.chat_id == memory.chat_id,
-                Memory.id != memory.id,
+                Memory.id != memory.id, # 不要包括自己, 距离100%为0没有意义
                 Memory.content_vec.isnot(None),
             )
             .order_by(dist)
@@ -88,33 +88,36 @@ async def assign_tags(session: AsyncSession, memory: Memory) -> list[str]:
         )
     ).all()
 
-    vote: dict[str, float] = {}
+    # 标签传播（Label Propagation）
+    vote: dict[str, float] = {} # {tag: score}
     sim_total = 0.0
-    for nbr, d in neighbours:
-        sim = max(0.0, 1.0 - float(d))
+    for nbr, d in neighbours: # nbr: Memory 对象, d: 余弦距离
+        sim = max(0.0, 1.0 - float(d)) # sim越大, 向量越接近
         sim_total += sim
         for t in (nbr.tags or []):
-            vote[t] = vote.get(t, 0.0) + sim
-    if sim_total > 0:
-        vote = {t: s / sim_total for t, s in vote.items()}
+            vote[t] = vote.get(t, 0.0) + sim # 权重为相似度
+    if sim_total > 0: # avoid division by zero
+        vote = {t: s / sim_total for t, s in vote.items()}  # 将总比例设为1
 
     # 3. centroid backstop against the registry ------------------------------
+    # 冷启动补充. 一开始其实还没有什么tags, 所以从prefill的里选择. 这些原型tags定义在 scripts/seed_tags.py:15-31. 
+    # Dream维护模式开启以后, 会覆盖掉这些预设的原型向量
     centroid_sim: dict[str, float] = {}
     for tag in await get_vocabulary(session):
-        cvec = _vec(tag.centroid)
+        cvec = _vec(tag.centroid)  
         if cvec is not None:
             centroid_sim[tag.name] = _cos(qvec, cvec)
 
     # 4. combine: a tag's score is the stronger of the two signals -----------
     scores: dict[str, float] = {}
     for t in set(vote) | set(centroid_sim):
-        scores[t] = max(vote.get(t, 0.0), centroid_sim.get(t, 0.0))
+        scores[t] = max(vote.get(t, 0.0), centroid_sim.get(t, 0.0)) # 两个分数之间, 取max, 防止相互拖累. 
 
     chosen = sorted(
         (t for t, s in scores.items() if s >= threshold),
         key=lambda t: scores[t],
         reverse=True,
-    )[: settings.tag_max_per_memory]
+    )[: settings.tag_max_per_memory] # 最后选取分数前几名的向量
 
     memory.tags = chosen
     memory.pending = len(chosen) == 0   # 5. nothing cleared the bar → pending

@@ -22,11 +22,11 @@ _SCHEMA_DOC = """{
   "topic_relates_to_grievance_id": "<grievance的id> 或 null"
 }"""
 
-_VALID_BIDS = {"none", "venting", "sharing", "seeking_comfort", "asking", "testing"}
+_VALID_BIDS = {"none", "venting", "sharing", "seeking_comfort", "asking", "testing"}  # 好像是可以在请求参数里指定json的某个字段必须从一个列表中选取的. 
 _VALID_RESP = {"turn_toward", "turn_away", "turn_against", "not_applicable"}
 _VALID_TONES = {"perfunctory", "warm", "defensive", "dismissive",
                 "affectionate", "apologetic", "excited", "demanding"}
-
+ 
 
 def _build_messages(her_last_msg: str | None, his_msg: str,
                     recent_context: str, state) -> list[dict]:
@@ -103,4 +103,4 @@ async def extract(her_last_msg: str | None, his_msg: str,
     )
     if not data:
         return dict(_NEUTRAL)  # 失败降级:按中性事件处理,不让管线崩
-    return _validate(data, state)
+    return _validate(data, state) 

@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app import __version__
 from app.config import settings
 from app.db import init_db
 from app.memory.l2_hot import heat_tracker
@@ -31,7 +32,7 @@ async def lifespan(app: FastAPI):
         await heat_tracker.stop()
 
 
-app = FastAPI(title="Dreamory", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Dreamory", version=__version__, lifespan=lifespan)
 
 app.include_router(chat.router)
 app.include_router(memory.router)

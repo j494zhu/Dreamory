@@ -49,6 +49,7 @@ class AffectState:
     security: float = 0.65    # 关系安全感 0~1,慢变量,非对称更新,几乎不自发回升
     patience: int = 5         # 本会话耐心预算,整数;新会话重置
 
+    repair_attempts: int = 0  # 当前冷战/冲突里他连续尝试哄的次数(保底松动用,消气或重新开吵时清零)
     warm_streak: int = 0      # 连续正面回应计数(进入 warm 的条件)
     turn: int = 0
     last_ts: float = field(default_factory=time.time)

@@ -59,7 +59,10 @@ class Settings(BaseSettings):
     tag_max_per_memory: int = Field(5, alias="TAG_MAX_PER_MEMORY")
 
     # ── Dream ─────────────────────────────────────────────────────
-    dream_enabled: bool = Field(False, alias="DREAM_ENABLED")
+    # Auto-dream is ON: after a turn commits, the pipeline fires should_dream()
+    # and, if the pending backlog is high enough, runs a Dream cycle in the
+    # background (non-blocking). Set DREAM_ENABLED=false to disable.
+    dream_enabled: bool = Field(True, alias="DREAM_ENABLED")
 
 
 @lru_cache
