@@ -99,6 +99,18 @@ def test_days_range_maps_to_ts_window():
     assert ts_min is None
 
 
+def test_relevant_filters_low_score_filler():
+    """exclude_ids 排掉真命中后,剩下的低分填充项必须被滤掉,
+    否则模型误以为还有料可挖,把轮数烧在冗余检索上。"""
+    from app.memory.retrieval import Hit
+
+    good = Hit(Memory(content="真命中", speaker=Speaker.agent, tags=[]), 0.72, "content")
+    filler = Hit(Memory(content="边角料", speaker=Speaker.agent, tags=[]), 0.31, "content")
+    kept = tools._relevant([good, filler])
+    assert kept == [good]
+    assert tools._relevant([filler]) == []
+
+
 def test_fmt_memory_distinguishes_speakers_and_life_events():
     m_user = Memory(content="我下周出差", speaker=Speaker.user, tags=[])
     m_user.ts_ms = now_ms() - 60_000

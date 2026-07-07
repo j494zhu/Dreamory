@@ -57,22 +57,45 @@ logger = logging.getLogger(__name__)
 _REPLY_RE = re.compile(r"<reply>(.*?)</reply>", re.S)
 _THINKING_RE = re.compile(r"<thinking>(.*?)</thinking>", re.S)
 _TIMER_RE = re.compile(r'<timer\s+minutes\s*=\s*"?(\d+)"?\s*>(.*?)</timer>', re.S | re.I)
+# 容错:标签常未闭合(尤其工具轮之后模型偷懒,只吐半个 <reply> 或整段 <thinking>)。
+# 实盘教训(0.2.3):set_timer 可靠触发后工具轮变多,未闭合标签会把裸 <reply>/<thinking>
+# 泄给用户。以下正则处理未闭合情形,_STRAY_TAG_RE 是最后一道"绝不泄裸标签"的保险。
+_UNCLOSED_THINKING_RE = re.compile(r"<thinking>(.*?)(?=<reply>|$)", re.S | re.I)
+_REPLY_OPEN_RE = re.compile(r"<reply>(.*?)(?=<reply>|<thinking>|</reply>|$)", re.S | re.I)
+_STRAY_TAG_RE = re.compile(r"</?(?:reply|thinking)\s*>", re.I)
 
 MAX_REPLIES_PER_TURN = 4   # 连发上限,和注入器里的口径一致
 
 
 def _parse_generation(raw: str) -> tuple[str, list[str]]:
-    """<thinking> + 一到多个 <reply> → (内心独白, [消息1, 消息2, …])。"""
-    think_m = _THINKING_RE.search(raw)
-    thinking = think_m.group(1).strip() if think_m else ""
+    """<thinking> + 一到多个 <reply> → (内心独白, [消息1, 消息2, …])。
+    对未闭合/残缺标签容错:无论如何都不把裸 <reply>/<thinking> 标签泄给用户。"""
+    # 1. thinking:优先闭合块,退而求其次未闭合的 <thinking>…(到第一个 <reply> 或结尾)
+    tm = _THINKING_RE.search(raw)
+    if tm:
+        thinking = tm.group(1).strip()
+        body = _THINKING_RE.sub("", raw)
+    else:
+        um = _UNCLOSED_THINKING_RE.search(raw)
+        if um:
+            thinking = um.group(1).strip()
+            body = raw[:um.start()] + raw[um.end():]
+        else:
+            thinking, body = "", raw
 
-    replies = [r.strip() for r in _REPLY_RE.findall(raw) if r.strip()]
+    # 2. replies:先取闭合 <reply>…</reply>,没有再退回未闭合 <reply>…
+    replies = [r.strip() for r in _REPLY_RE.findall(body) if r.strip()]
+    if not replies and "<reply>" in body.lower():
+        replies = [seg.strip() for seg in _REPLY_OPEN_RE.findall(body) if seg.strip()]
+
+    # 3. 兜底清掉任何残留裸标签,绝不泄给用户
+    replies = [t for t in (_STRAY_TAG_RE.sub("", r).strip() for r in replies) if t]
     if replies:
         return thinking, replies[:MAX_REPLIES_PER_TURN]
 
-    # 没找到 reply 标签:fallback,删掉整段 thinking 后当单条消息返回
-    cleaned = _THINKING_RE.sub("", raw).strip()
-    return thinking, [cleaned or raw.strip()]
+    # 4. 完全没有 reply:整段清标签后当单条消息(模型只吐了独白时,独白即回复,总比失声好)
+    cleaned = _STRAY_TAG_RE.sub("", body).strip()
+    return thinking, [cleaned or _STRAY_TAG_RE.sub("", raw).strip() or "…"]
 
 
 def _extract_timer(raw: str) -> tuple[str, dict | None]:

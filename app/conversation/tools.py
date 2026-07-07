@@ -23,6 +23,10 @@ from app.memory import l3_store, retrieval
 from app.models import Memory, MemoryKind, Speaker, TimerPing, now_ms
 
 MAX_HITS_PER_CALL = 6
+# search_memory 结果的相关性下限。没有它,exclude_ids 排掉真命中之后,
+# 后续搜索会把池子里剩下的低分"填充记忆"当成果喂回去,模型误以为还有料可挖,
+# 把轮数烧在冗余检索上。低于下限 → 明确告知"没有更相关的了",让她停手作答。
+SEARCH_MIN_SCORE = 0.40
 
 
 # ── 工具 schema ───────────────────────────────────────────────────────
@@ -135,6 +139,11 @@ def _days_range(args: dict) -> tuple[int | None, int | None]:
     return ts_min, ts_max
 
 
+def _relevant(hits: list) -> list:
+    """按相关性下限过滤(纯函数,可单测)。"""
+    return [h for h in hits if h.score >= SEARCH_MIN_SCORE]
+
+
 async def _do_search(session: AsyncSession, chat, args: dict,
                      exclude_ids: set[uuid.UUID]) -> ToolOutcome:
     query = (args.get("query") or "").strip()
@@ -150,9 +159,13 @@ async def _do_search(session: AsyncSession, chat, args: dict,
     )
     if not hits:
         return ToolOutcome("(什么都没想起来 —— 可以换个说法/换 axis 再试,或者承认记不清)")
-    lines = [_fmt_memory(h.memory) for h in hits]
+    kept = _relevant(hits)
+    if not kept:
+        # 有结果但都不相关:多半是真命中已经喂过、池子只剩边角料 → 别让她继续挖
+        return ToolOutcome("(没有更相关的记忆了 —— 这件事你知道的就是眼前这些,别再翻了,直接回复)")
+    lines = [_fmt_memory(h.memory) for h in kept]
     return ToolOutcome("想起来这些:\n" + "\n".join(lines),
-                       hit_ids=[h.memory.id for h in hits])
+                       hit_ids=[h.memory.id for h in kept])
 
 
 async def _do_grep(session: AsyncSession, chat, args: dict) -> ToolOutcome:

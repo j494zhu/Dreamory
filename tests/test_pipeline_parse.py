@@ -47,6 +47,46 @@ def test_parse_drops_empty_replies():
     assert replies == ["在的"]
 
 
+# ── 未闭合/残缺标签容错(0.2.3 实盘教训:工具轮后模型常吐半个标签)──────
+# 无论如何都不能把裸 <reply>/<thinking> 泄给用户。
+
+
+def test_parse_unclosed_reply_tag_does_not_leak():
+    """只有开标签没有闭标签:内容照常返回,不带裸 <reply>。"""
+    thinking, replies = pipeline._parse_generation("<reply>快去吧,别着凉了~")
+    assert replies == ["快去吧,别着凉了~"]
+    assert all("<reply>" not in r and "</reply>" not in r for r in replies)
+
+
+def test_parse_unclosed_thinking_only_does_not_leak():
+    """模型只吐了未闭合独白:不能泄 <thinking> 裸标签。"""
+    thinking, replies = pipeline._parse_generation("<thinking>闹钟定好了,等他洗完就好")
+    assert thinking == "闹钟定好了,等他洗完就好"
+    assert all("<thinking>" not in r for r in replies)
+    assert replies and replies[0]          # 不能失声
+
+
+def test_parse_unclosed_thinking_then_unclosed_reply():
+    thinking, replies = pipeline._parse_generation(
+        "<thinking>他终于回了</thinking><reply>你可算回来了"
+    )
+    assert thinking == "他终于回了"
+    assert replies == ["你可算回来了"]
+
+
+def test_parse_multiple_unclosed_replies_split():
+    _, replies = pipeline._parse_generation("<reply>第一句<reply>第二句")
+    assert replies == ["第一句", "第二句"]
+
+
+def test_parse_never_returns_bare_tags():
+    for raw in ("<reply></reply>", "<thinking></thinking>", "<reply>", "<thinking>"):
+        _, replies = pipeline._parse_generation(raw)
+        joined = "".join(replies)
+        assert "<reply>" not in joined and "<thinking>" not in joined
+        assert replies  # 永远至少有一条(哪怕是占位)
+
+
 # ── 定时器:<timer minutes="X"> ────────────────────────────
 
 
