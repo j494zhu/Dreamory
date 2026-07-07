@@ -76,6 +76,15 @@ class AffectState:
     patience: int = 5         # 本会话耐心预算,整数;新会话重置
     affection: float = 50.0   # 好感度 0~200,最慢变量,跨会话积累(50=陌生,100=恋人)
 
+    # ── 激素(0~1,不同半衰期的多时间尺度残留;由 dynamics 规则触发,LLM 不碰数字)──
+    adrenaline: float = 0.0   # 急性应激/上头,半衰期~20分钟:吵架、狂喜、心跳加速
+    oxytocin: float = 0.0     # 亲密余韵,半衰期~3小时:和好、被接住、跨过里程碑
+    cortisol: float = 0.0     # 压力残留,半衰期~20小时:吵完架第二天"还是不得劲"
+
+    # ── 注意力/话题转移信号(由 dynamics 维护,pipeline 读取决定是否递话题种子)──
+    dull_streak: int = 0          # 连续"没什么可接的"轮数(话题变淡的计数器)
+    last_shift_turn: int = -999   # 上次注入话题种子的轮数(冷却用)
+
     repair_attempts: int = 0  # 当前冷战/冲突里他连续尝试哄的次数(保底松动用,消气或重新开吵时清零)
     warm_streak: int = 0      # 连续正面回应计数(进入 warm 的条件)
     turn: int = 0

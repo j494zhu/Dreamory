@@ -129,9 +129,12 @@ async def _vector_search(
     top_k: int,
     tags_any: list[str] | None,
     exclude_ids: set[uuid.UUID] | None,
+    ts_min_ms: int | None = None,
+    ts_max_ms: int | None = None,
 ) -> list[tuple[Memory, float]]:
     """Shared cosine ANN search over a given vector column. Returns (Memory, score)
-    with score in [0,1] (1 = identical), tag overlap applied as a hard WHERE filter."""
+    with score in [0,1] (1 = identical), tag overlap applied as a hard WHERE filter.
+    ts_min/max are side-car metadata filters (iron law: time never enters the vector)."""
     distance = column.cosine_distance(query_vec)
     stmt = (
         select(Memory, distance.label("dist"))
@@ -142,10 +145,45 @@ async def _vector_search(
         stmt = stmt.where(Memory.tags.op("&&")(tags_any))
     if exclude_ids:
         stmt = stmt.where(Memory.id.notin_(exclude_ids))
+    if ts_min_ms is not None:
+        stmt = stmt.where(Memory.ts_ms >= ts_min_ms)
+    if ts_max_ms is not None:
+        stmt = stmt.where(Memory.ts_ms <= ts_max_ms)
     stmt = stmt.order_by(distance).limit(top_k)
 
     rows = (await session.execute(stmt)).all()
     return [(m, 1.0 - float(dist)) for m, dist in rows]
+
+
+async def grep_memories(
+    session: AsyncSession,
+    *,
+    chat_id: uuid.UUID,
+    keyword: str,
+    speaker: Speaker | None = None,
+    limit: int = 8,
+    ts_min_ms: int | None = None,
+    ts_max_ms: int | None = None,
+) -> list[Memory]:
+    """Plain-text keyword search (ILIKE) over L3 — the vector-free fallback axis.
+    For exact recall the embeddings can miss: names, numbers, quoted phrases."""
+    kw = keyword.strip()
+    if not kw:
+        return []
+    stmt = (
+        select(Memory)
+        .where(Memory.chat_id == chat_id, Memory.content.ilike(f"%{kw}%"))
+        .order_by(Memory.ts_ms.desc())
+        .limit(max(1, min(limit, 20)))
+    )
+    if speaker is not None:
+        stmt = stmt.where(Memory.speaker == speaker)
+    if ts_min_ms is not None:
+        stmt = stmt.where(Memory.ts_ms >= ts_min_ms)
+    if ts_max_ms is not None:
+        stmt = stmt.where(Memory.ts_ms <= ts_max_ms)
+    rows = (await session.execute(stmt)).scalars().all()
+    return list(rows)
 
 
 async def search_content(
@@ -156,12 +194,15 @@ async def search_content(
     top_k: int,
     tags_any: list[str] | None = None,
     exclude_ids: set[uuid.UUID] | None = None,
+    ts_min_ms: int | None = None,
+    ts_max_ms: int | None = None,
 ) -> list[tuple[Memory, float]]:
     """VectorDB_1: semantic recall by content. (the 'what was said' axis)"""
     qvec = await embeddings.embed_one(query)
     return await _vector_search(
         session, column=Memory.content_vec, query_vec=qvec, chat_id=chat_id,
         top_k=top_k, tags_any=tags_any, exclude_ids=exclude_ids,
+        ts_min_ms=ts_min_ms, ts_max_ms=ts_max_ms,
     )
 
 
@@ -173,10 +214,13 @@ async def search_emotion(
     top_k: int,
     tags_any: list[str] | None = None,
     exclude_ids: set[uuid.UUID] | None = None,
+    ts_min_ms: int | None = None,
+    ts_max_ms: int | None = None,
 ) -> list[tuple[Memory, float]]:
     """VectorDB_2: recall by emotion/mood. (the 'how it felt' axis — e.g. '找我感到被背叛的记忆')"""
     qvec = await embeddings.embed_one(query)
     return await _vector_search(
         session, column=Memory.emotion_vec, query_vec=qvec, chat_id=chat_id,
         top_k=top_k, tags_any=tags_any, exclude_ids=exclude_ids,
+        ts_min_ms=ts_min_ms, ts_max_ms=ts_max_ms,
     )

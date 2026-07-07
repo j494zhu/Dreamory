@@ -11,11 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.affect.persona import PRESETS, Persona
 from app.affect.state import AffectState
-from app.conversation import pipeline
+from app.config import settings
+from app.conversation import config_store, pipeline
+from app.conversation import schedule as sched
 from app.conversation.bus import event_bus, sse_format
 from app.db import SessionLocal, get_session
 from app.memory import l3_store
-from app.models import Chat, Memory, MemoryKind, TimerPing
+from app.models import Chat, LifeEvent, Memory, MemoryKind, TimerPing
 from app.schemas import (
     ChatCreate,
     ChatOut,
@@ -24,6 +26,7 @@ from app.schemas import (
     MemoryOut,
     MessageIn,
     MessageOut,
+    RevisionOut,
 )
 
 router = APIRouter(prefix="/api/chats", tags=["chat"])
@@ -57,10 +60,15 @@ async def create_chat(body: ChatCreate, session: AsyncSession = Depends(get_sess
         goal=body.goal,
     )
     session.add(chat)
+    await session.flush()
+    if settings.schedule_enabled:
+        await sched.seed_defaults(session, chat.id)          # 冷启动作息
+    await config_store.snapshot(session, chat, reason="initial", actor="system")  # rev 1 = 出厂配置
     await session.commit()
     await session.refresh(chat)
     return ChatOut(id=chat.id, title=chat.title, goal=chat.goal,
-                   persona=chat.persona, affect=chat.affect)
+                   persona=chat.persona, affect=chat.affect,
+                   core_identity=chat.core_identity)
 
 
 @router.get("", response_model=list[ChatSummary])
@@ -73,13 +81,17 @@ async def list_chats(session: AsyncSession = Depends(get_session)):
 async def get_chat(chat_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
     chat = await _get_chat(session, chat_id)
     return ChatOut(id=chat.id, title=chat.title, goal=chat.goal,
-                   persona=chat.persona, affect=chat.affect)
+                   persona=chat.persona, affect=chat.affect,
+                   core_identity=chat.core_identity)
 
 
 @router.patch("/{chat_id}", response_model=ChatOut)
 async def update_chat(chat_id: uuid.UUID, body: ChatUpdate,
                       session: AsyncSession = Depends(get_session)):
     chat = await _get_chat(session, chat_id)
+    # 配置级变更(人格/目标/核心认知)先落版本快照,改崩了可回退。标题不算配置。
+    if body.goal is not None or body.persona is not None or body.core_identity is not None:
+        await config_store.snapshot(session, chat, reason="user edit", actor="user")
     if body.title is not None:
         chat.title = body.title
     if body.goal is not None:
@@ -87,10 +99,70 @@ async def update_chat(chat_id: uuid.UUID, body: ChatUpdate,
     if body.persona is not None:
         persona = _build_persona(body, Persona.from_dict(chat.persona))
         chat.persona = persona.to_dict()
+    if body.core_identity is not None:
+        chat.core_identity = body.core_identity.strip() or None
     await session.commit()
     await session.refresh(chat)
     return ChatOut(id=chat.id, title=chat.title, goal=chat.goal,
-                   persona=chat.persona, affect=chat.affect)
+                   persona=chat.persona, affect=chat.affect,
+                   core_identity=chat.core_identity)
+
+
+# ── 配置版本(自我迭代地基):历史 + 回退 ─────────────────────────────
+@router.get("/{chat_id}/revisions", response_model=list[RevisionOut])
+async def get_revisions(chat_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    await _get_chat(session, chat_id)
+    revs = await config_store.list_revisions(session, chat_id)
+    return [RevisionOut(rev=r.rev, reason=r.reason, actor=r.actor,
+                        created_ms=r.created_ms, data=r.data) for r in revs]
+
+
+@router.post("/{chat_id}/revisions/{rev}/rollback", response_model=ChatOut)
+async def rollback_revision(chat_id: uuid.UUID, rev: int,
+                            session: AsyncSession = Depends(get_session)):
+    chat = await _get_chat(session, chat_id)
+    try:
+        await config_store.rollback(session, chat, rev)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    await session.commit()
+    await session.refresh(chat)
+    return ChatOut(id=chat.id, title=chat.title, goal=chat.goal,
+                   persona=chat.persona, affect=chat.affect,
+                   core_identity=chat.core_identity)
+
+
+# ── 日程与生活(调试/前端提示用)──────────────────────────────────────
+@router.get("/{chat_id}/schedule")
+async def get_schedule(chat_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    await _get_chat(session, chat_id)
+    items = await sched.load_active(session, chat_id)
+    return [
+        {"id": str(i.id), "kind": i.kind, "label": i.label, "days": i.days,
+         "start_hm": i.start_hm, "end_hm": i.end_hm, "due_ms": i.due_ms,
+         "source": i.source}
+        for i in items
+    ]
+
+
+@router.get("/{chat_id}/life-events")
+async def get_life_events(chat_id: uuid.UUID, limit: int = 20,
+                          session: AsyncSession = Depends(get_session)):
+    await _get_chat(session, chat_id)
+    rows = (
+        await session.execute(
+            select(LifeEvent, Memory.content)
+            .join(Memory, LifeEvent.memory_id == Memory.id)
+            .where(LifeEvent.chat_id == chat_id)
+            .order_by(LifeEvent.occurs_ms.desc())
+            .limit(limit)
+        )
+    ).all()
+    return [
+        {"id": str(ev.id), "content": content, "valence": ev.valence,
+         "occurs_ms": ev.occurs_ms, "status": ev.status}
+        for ev, content in rows
+    ]
 
 
 @router.delete("/{chat_id}")

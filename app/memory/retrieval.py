@@ -53,6 +53,8 @@ async def retrieve(
     goal: str | None = None,          # L1 current goal → conditional bias
     goal_weight: float = 0.25,
     exclude_ids: set[uuid.UUID] | None = None,
+    ts_min_ms: int | None = None,     # side-car time filter (tool-driven recall)
+    ts_max_ms: int | None = None,
     record: bool = True,
 ) -> list[Hit]:
     k = top_k or settings.retrieval_top_k
@@ -64,6 +66,7 @@ async def retrieve(
         for mem, score in await l3_store.search_content(
             session, query=query, chat_id=chat_id, top_k=pool,
             tags_any=tags_any, exclude_ids=exclude_ids,
+            ts_min_ms=ts_min_ms, ts_max_ms=ts_max_ms,
         ):
             merged[mem.id] = Hit(mem, score, "content")
 
@@ -71,6 +74,7 @@ async def retrieve(
         for mem, score in await l3_store.search_emotion(
             session, query=query, chat_id=chat_id, top_k=pool,
             tags_any=tags_any, exclude_ids=exclude_ids,
+            ts_min_ms=ts_min_ms, ts_max_ms=ts_max_ms,
         ):
             cur = merged.get(mem.id)
             if cur is None:

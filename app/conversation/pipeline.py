@@ -13,11 +13,14 @@ reflects how *his current message* moved her state.
         刻骨铭心 (cherished) + L2 hot + L3 retrieval, deduped & budgeted
         + working-memory FIFO turns
         + core identity / goal / affect directives via the injector
-        + 时间感知(现在几点、距上次说话多久)
+        + 时间感知(现在几点、距上次说话多久)+ 日程【你的生活】+ 话题种子
   6. generate                (LLM② pro, two-stage <thinking>/<reply> brain-theatre;
-                              可多条 <reply> 连发,可附带 <timer> 约"过会儿来找他")
+                              可多条 <reply> 连发。0.2.2: 有界 agent loop ——
+                              她可以先 search_memory / grep_memory 翻记忆、
+                              set_timer 定闹钟,再作答;轮次用尽强制作答)
   7. persist her replies to L3 (content + reasoning + emotion) + hot-path tag them
   8. save affect state (+ schedule timer ping if she asked for one)
+  9. 后台维护(不阻塞): auto-dream + 生活模拟器补写新鲜事
 
 There is a second entrypoint, handle_timer_fire(): 定时器到点后的隐藏 LLM 调用,
 没有他的新消息,不跑抽取/动力学,只做 时间效应 → L1 组装 → 生成 → 落库,
@@ -27,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
 import time
 import uuid
@@ -39,6 +43,8 @@ from app.affect import dynamics, extractor, injector
 from app.affect.persona import PRESETS, Persona
 from app.affect.state import AffectState
 from app.config import settings
+from app.conversation import life_sim, tools
+from app.conversation import schedule as sched
 from app.conversation.identity import build_core_identity
 from app.llm import client
 from app.llm.client import MODEL_PRO
@@ -219,6 +225,81 @@ async def _pending_timer_count(session: AsyncSession, chat_id) -> int:
     ) or 0
 
 
+# ── 生成(0.2.2: 有界 agent loop)──────────────────────────────────────
+WARM_SHIFT_PROB = 0.2   # warm 模式下即使话题不淡,也偶尔想分享点自己的事
+
+
+async def _generate_with_tools(
+    session: AsyncSession, chat: Chat, messages: list[dict], *,
+    allow_timer: bool, exclude_ids: set[uuid.UUID], pending_timers: int,
+) -> tuple[str, list[dict], dict | None]:
+    """有界工具循环:最多 tool_max_rounds 次往返,之后 tool_choice=none 强制作答。
+    任何一环失败都整体降级为无工具的单次生成 —— 工具是增强,不是依赖。
+    返回 (raw文本, 工具调用trace, 工具定下的timer|None)。"""
+    specs = tools.build_specs(allow_timer)
+    trace: list[dict] = []
+    timer_set: dict | None = None
+    pending = pending_timers
+    convo = list(messages)
+    excl = set(exclude_ids)
+
+    try:
+        for _ in range(max(1, settings.tool_max_rounds)):
+            msg = await client.chat_tools(
+                convo, tools=specs, temperature=0.85, thinking=False,
+            )
+            if not msg.tool_calls:
+                return (msg.content or ""), trace, timer_set
+            convo.append(client.tool_message_to_dict(msg))
+            for tc in msg.tool_calls:
+                outcome = await tools.dispatch(
+                    session, chat=chat, name=tc.function.name,
+                    arguments=tc.function.arguments or "{}",
+                    exclude_ids=excl, pending_timer_count=pending,
+                )
+                if outcome.timer:
+                    timer_set = outcome.timer
+                    pending += 1
+                excl |= set(outcome.hit_ids)   # 已喂过的记忆不再重复返回
+                trace.append({
+                    "tool": tc.function.name,
+                    "args": tc.function.arguments,
+                    "result": outcome.text[:160],
+                })
+                convo.append({"role": "tool", "tool_call_id": tc.id, "content": outcome.text})
+        # 轮次用尽:禁用工具,强制吐最终回复
+        msg = await client.chat_tools(
+            convo, tools=specs, tool_choice="none", temperature=0.85, thinking=False,
+        )
+        return (msg.content or ""), trace, timer_set
+    except Exception:  # noqa: BLE001 — 工具链路故障不能让她失声
+        logger.exception("tool loop failed; falling back to plain generation")
+        raw = await client.chat(messages, model=MODEL_PRO, temperature=0.85, thinking=False)
+        return raw, trace, timer_set
+
+
+async def _maybe_topic_seed(
+    session: AsyncSession, chat: Chat, state: AffectState,
+) -> str:
+    """注意力转移的确定性门:话题淡了(dull_streak)或 warm 模式低概率,
+    且距上次转移过了冷却轮数 → 从生活事件池取一条新鲜事当种子。
+    素材是预生成的正史,这里零 LLM。"""
+    if not settings.life_sim_enabled or state.mode not in ("warm", "neutral"):
+        return ""
+    if state.turn - state.last_shift_turn < settings.seed_cooldown_turns:
+        return ""
+    want = state.dull_streak >= 2 or (
+        state.mode == "warm" and random.random() < WARM_SHIFT_PROB
+    )
+    if not want:
+        return ""
+    seed = await life_sim.pick_seed(session, chat.id)
+    if seed:
+        state.last_shift_turn = state.turn
+        state.dull_streak = 0
+    return seed or ""
+
+
 async def handle_message(
     session: AsyncSession, chat: Chat, user_content: str
 ) -> dict:
@@ -268,18 +349,41 @@ async def handle_message(
     working_turns, working_summary = await l1_assembly.build_working_turns(working)
 
     tag_vocab = await tags.vocabulary_summary(session)
-    core_identity = build_core_identity(persona, tag_vocab)
+    core_identity = build_core_identity(persona, tag_vocab, override=chat.core_identity)
     if working_summary:
         memory_block = f"{memory_block}\n\n【更早对话摘要】\n{working_summary}".strip()
 
     pending_timers = await _pending_timer_count(session, chat.id)
     allow_timer = settings.timer_enabled and pending_timers < settings.timer_max_pending
 
+    # 日程【你的生活】:她此刻按理在做什么 + 接下来的安排(不占记忆三槽预算)
+    schedule_block = ""
+    if settings.schedule_enabled:
+        await sched.expire_past_oneoffs(session, chat.id)
+        items = await sched.load_active(session, chat.id)
+        if not items:   # 0.2.0 的旧对话没有作息:懒种默认值
+            await sched.seed_defaults(session, chat.id)
+            items = await sched.load_active(session, chat.id)
+        schedule_block = sched.render_block(items)
+
+    # 话题种子:代码决定何时转,事件池提供素材,LLM 只决定怎么说
+    topic_seed = await _maybe_topic_seed(session, chat, state)
+
+    # 检索置信度:自动想起的东西很模糊 → 提醒她可以主动去翻(工具开启时才有意义)
+    memory_hint = ""
+    if settings.tools_enabled and (not hits or hits[0].score < settings.retrieval_confidence):
+        memory_hint = (
+            "(提示:这一轮自动想起的内容很少或很模糊——如果他说的事你没印象,"
+            "先搜一下再回,别不懂装懂,也别凭空编。)"
+        )
+
     system_prompt = injector.render(
         state, persona, core_identity=core_identity,
         memory_block=memory_block, goal=chat.goal,
         time_context=_time_context(prev_ts, first_turn=first_turn),
         allow_timer=allow_timer,
+        schedule_block=schedule_block, topic_seed=topic_seed,
+        allow_tools=settings.tools_enabled, memory_hint=memory_hint,
     )
 
     # 6. generate (LLM②) -----------------------------------------------------
@@ -287,8 +391,17 @@ async def handle_message(
     # block, NOT the model's native reasoning — keep native reasoning off so it
     # doesn't suppress the in-band block (and to save tokens/latency).
     messages = [{"role": "system", "content": system_prompt}] + working_turns
-    raw = await client.chat(messages, model=MODEL_PRO, temperature=0.85, thinking=False)
-    raw, timer_req = _extract_timer(raw)          # 她约的"过会儿来找他"
+    tool_trace: list[dict] = []
+    tool_timer: dict | None = None
+    if settings.tools_enabled:
+        l1_ids = {m.id for m in cherished} | {m.id for m in hot} | {h.memory.id for h in hits}
+        raw, tool_trace, tool_timer = await _generate_with_tools(
+            session, chat, messages, allow_timer=allow_timer,
+            exclude_ids=working_ids | l1_ids, pending_timers=pending_timers,
+        )
+    else:
+        raw = await client.chat(messages, model=MODEL_PRO, temperature=0.85, thinking=False)
+    raw, timer_req = _extract_timer(raw)          # <timer> 标签兜底(工具未开/模型偷懒)
     thinking, replies = _parse_generation(raw)    # 一到多条连发消息
 
     # 7. persist her replies to L3 (content + reasoning + emotion) + tag -----
@@ -297,9 +410,10 @@ async def handle_message(
         session, chat.id, replies, thinking, state, cherish=cherish, salience=salience,
     )
 
-    # 7.5 schedule her timer ping (if she asked for one and quota allows) ----
-    timer_scheduled = None
-    if timer_req and allow_timer:
+    # 7.5 schedule her timer ping (tool 已直接入库;<timer> 标签是兜底路径) ----
+    timer_scheduled = tool_timer
+    quota_left = settings.timer_max_pending - pending_timers - (1 if tool_timer else 0)
+    if timer_req and settings.timer_enabled and quota_left > 0:
         session.add(TimerPing(
             chat_id=chat.id,
             due_ms=now_ms() + timer_req["minutes"] * 60_000,
@@ -311,8 +425,9 @@ async def handle_message(
     chat.affect = state.to_dict()
     await session.commit()
 
-    # 后台离线维护:回复已提交,趁机检查是否该做梦(不阻塞本次响应)。
+    # 后台离线维护:回复已提交,趁机检查是否该做梦/补写生活(不阻塞本次响应)。
     _schedule_auto_dream()
+    life_sim.schedule_auto_sim(chat.id)
 
     tier_key, tier_label = state.affection_tier()
     result = {
@@ -335,9 +450,18 @@ async def handle_message(
                 "warm_streak": state.warm_streak,
                 "affection": round(state.affection, 1),
             },
+            "hormones": {
+                "adrenaline": round(state.adrenaline, 2),
+                "oxytocin": round(state.oxytocin, 2),
+                "cortisol": round(state.cortisol, 2),
+            },
             "affection_tier": {"key": tier_key, "label": tier_label},
             "tier_shift": events.get("_tier_shift"),
             "timer_scheduled": timer_scheduled,
+            "dull_streak": state.dull_streak,
+            "topic_seed": topic_seed or None,
+            "schedule": schedule_block or None,
+            "tools": tool_trace,
             "l1": {
                 "cherished": l1_dbg.cherished_ids,
                 "hot": l1_dbg.hot_ids,
@@ -399,7 +523,15 @@ async def handle_timer_fire(
         memory_block = f"{memory_block}\n\n【更早对话摘要】\n{working_summary}".strip()
 
     tag_vocab = await tags.vocabulary_summary(session)
-    core_identity = build_core_identity(persona, tag_vocab)
+    core_identity = build_core_identity(persona, tag_vocab, override=chat.core_identity)
+
+    # 主动消息也活在她的日程里;没有明确备忘时,拿一条新鲜事当素材
+    schedule_block = ""
+    if settings.schedule_enabled:
+        schedule_block = sched.render_block(await sched.load_active(session, chat.id))
+    topic_seed = ""
+    if not (topic or "").strip() and settings.life_sim_enabled:
+        topic_seed = await life_sim.pick_seed(session, chat.id) or ""
 
     system_prompt = injector.render(
         state, persona, core_identity=core_identity,
@@ -407,10 +539,20 @@ async def handle_timer_fire(
         time_context=_time_context(prev_ts),
         proactive=_PROACTIVE_TMPL.format(topic=topic or "(她只说了等会儿来找他)"),
         allow_timer=False,   # 主动消息里不许再约闹钟,防止连环自触发
+        schedule_block=schedule_block, topic_seed=topic_seed,
+        allow_tools=settings.tools_enabled,
     )
 
     messages = [{"role": "system", "content": system_prompt}] + working_turns
-    raw = await client.chat(messages, model=MODEL_PRO, temperature=0.85, thinking=False)
+    if settings.tools_enabled:
+        l1_ids = {m.id for m in cherished} | {m.id for m in hot} | {h.memory.id for h in hits}
+        raw, _trace, _t = await _generate_with_tools(
+            session, chat, messages, allow_timer=False,   # specs 里不含 set_timer
+            exclude_ids=working_ids | l1_ids,
+            pending_timers=settings.timer_max_pending,    # 双保险:quota 已满
+        )
+    else:
+        raw = await client.chat(messages, model=MODEL_PRO, temperature=0.85, thinking=False)
     raw, _ = _extract_timer(raw)   # 就算模型不听话吐了 timer 标签,也剥掉不调度
     thinking, replies = _parse_generation(raw)
 

@@ -72,6 +72,55 @@ async def chat(
     return resp.choices[0].message.content or ""
 
 
+async def chat_tools(
+    messages: list[dict],
+    *,
+    tools: list[dict],
+    model: str | None = None,
+    temperature: float = 0.7,
+    max_tokens: int | None = None,
+    thinking: bool | None = None,
+    tool_choice: str = "auto",
+):
+    """One completion round with function-calling enabled.
+
+    Returns the raw assistant message object (`.content`, `.tool_calls`) so the
+    caller can run a bounded agent loop: append the message, execute the tool
+    calls, append `role=tool` results, call again. `tool_choice="none"` forces
+    a final text answer (used when the loop hits its round cap)."""
+    client = get_client()
+    kwargs: dict = {
+        "model": model or MODEL_PRO,
+        "messages": messages,
+        "temperature": temperature,
+        "tools": tools,
+        "tool_choice": tool_choice,
+    }
+    if max_tokens:
+        kwargs["max_tokens"] = max_tokens
+    body = _thinking_body(thinking, None)
+    if body:
+        kwargs["extra_body"] = body
+
+    resp = await client.chat.completions.create(**kwargs)
+    return resp.choices[0].message
+
+
+def tool_message_to_dict(msg) -> dict:
+    """Assistant message with tool_calls → plain dict for the next request."""
+    out: dict = {"role": "assistant", "content": msg.content or ""}
+    if msg.tool_calls:
+        out["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+            }
+            for tc in msg.tool_calls
+        ]
+    return out
+
+
 async def chat_json(
     messages: list[dict],
     *,

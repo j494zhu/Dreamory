@@ -102,12 +102,17 @@ def build_memory_block(
             retr_unique.append(h)
             claimed.add(h.memory.id)
 
-    # ── decision B: per-slot budgets ────────────────────────────────────────
-    cher_kept, cher_drop = _fit(cher, int(total * CHERISHED_FRAC))
+    # ── decision B: per-slot budgets (0.2.2: 弹性化) ────────────────────────
+    # 刻骨铭心没用满的预算溢给"相关回忆"槽 —— 早期对话刻骨铭心还很少,
+    # 僵化的 20% 白白闲置;比例仍是软上限,优先级次序不变。
+    cher_budget = int(total * CHERISHED_FRAC)
+    cher_kept, cher_drop = _fit(cher, cher_budget)
+    cher_used = sum(estimate_tokens(m.content) for m in cher_kept)
+    spill = max(0, cher_budget - cher_used)
 
     # hot + retrieved share the "relevant" budget; retrieved sorted by score,
     # hot prepended (higher priority). Lowest-score retrieved dropped first.
-    relevant_budget = int(total * (RETRIEVED_FRAC + WORKING_FRAC * 0.0)) or int(total * RETRIEVED_FRAC)
+    relevant_budget = int(total * RETRIEVED_FRAC) + spill
     relevant = hot_unique + [h.memory for h in sorted(retr_unique, key=lambda h: h.score, reverse=True)]
     rel_kept, rel_drop = _fit(relevant, relevant_budget)
 

@@ -17,13 +17,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
+from datetime import datetime
 
 from sqlalchemy import select
 
 from app.config import settings
+from app.conversation import schedule as sched
 from app.models import Chat, TimerPing, now_ms
 
 logger = logging.getLogger(__name__)
+
+SLEEP_DEFER_JITTER_MS = 15 * 60_000   # 顺延到醒来后 0~15 分钟,别掐着秒表醒
 
 
 class TimerService:
@@ -32,7 +37,8 @@ class TimerService:
         self._stop = asyncio.Event()
 
     async def _tick(self) -> None:
-        """扫描并触发所有到点的闹钟。每个闹钟独立 session,互不拖累。"""
+        """扫描并触发所有到点的闹钟。每个闹钟独立 session,互不拖累。
+        撞进睡眠时段的闹钟顺延到醒来之后(她睡着,不会回消息)。"""
         from app.db import SessionLocal
 
         async with SessionLocal() as session:
@@ -46,11 +52,25 @@ class TimerService:
             ).scalars().all()
             if not due:
                 return
-            # 认领:先置 firing 并提交,进程内轮询不会重复拿到
+            # 认领:先置 firing 并提交,进程内轮询不会重复拿到;睡着的顺延保持 pending
+            claimed = []
+            items_cache: dict = {}
+            now_dt = datetime.now()
             for ping in due:
+                if settings.schedule_enabled:
+                    items = items_cache.get(ping.chat_id)
+                    if items is None:
+                        items = await sched.load_active(session, ping.chat_id)
+                        items_cache[ping.chat_id] = items
+                    if sched.is_sleeping(items, now_dt):
+                        wake = sched.wake_ms(items, now_dt)
+                        if wake:
+                            ping.due_ms = wake + random.randint(0, SLEEP_DEFER_JITTER_MS)
+                            logger.info("timer deferred past sleep (chat %s)", ping.chat_id)
+                            continue
                 ping.status = "firing"
+                claimed.append((ping.id, ping.chat_id, ping.topic, ping.due_ms))
             await session.commit()
-            claimed = [(p.id, p.chat_id, p.topic, p.due_ms) for p in due]
 
         for ping_id, chat_id, topic, due_at in claimed:
             await self._fire(ping_id, chat_id, topic, due_at)

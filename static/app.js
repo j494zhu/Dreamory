@@ -162,6 +162,23 @@ function renderDebug(d) {
   $("#dbg-thinking").textContent = d.thinking || "(无内心独白)";
   $("#dbg-events").textContent = JSON.stringify(d.events, null, 1);
 
+  const h = d.hormones || {};
+  setGauge("#g-adrenaline", h.adrenaline);
+  setGauge("#g-oxytocin", h.oxytocin);
+  setGauge("#g-cortisol", h.cortisol);
+
+  $("#dbg-schedule").textContent = d.schedule ? "📅 " + d.schedule : "📅 (无日程注入)";
+  $("#dbg-seed").textContent = d.topic_seed
+    ? "🌱 种子: " + d.topic_seed
+    : `🌱 无话题种子 (dull_streak=${d.dull_streak ?? 0})`;
+  const toolsUl = $("#dbg-tools");
+  toolsUl.innerHTML = "";
+  (d.tools || []).forEach((t) => {
+    const el = document.createElement("li");
+    el.textContent = `🔧 ${t.tool} ${t.args || ""} → ${t.result || ""}`;
+    toolsUl.appendChild(el);
+  });
+
   const s = d.scalars || {};
   setGauge("#g-arousal", s.arousal);
   setGauge("#g-security", s.security);

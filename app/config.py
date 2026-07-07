@@ -66,6 +66,23 @@ class Settings(BaseSettings):
     timer_max_pending: int = Field(3, alias="TIMER_MAX_PENDING")   # 每个 chat 同时挂着的闹钟上限
     timer_max_minutes: int = Field(1440, alias="TIMER_MAX_MINUTES")
 
+    # ── Tools(生成端 agent loop:主动回忆 / grep / 闹钟)──────────
+    # 关掉则退回 0.2.0 的单次生成 + <timer> 标签协议。
+    tools_enabled: bool = Field(True, alias="TOOLS_ENABLED")
+    tool_max_rounds: int = Field(3, alias="TOOL_MAX_ROUNDS")   # 工具往返上限,超过强制作答
+    # 自动检索 top1 分数低于此值 → 注入"记忆很模糊,可以主动翻"的提示
+    retrieval_confidence: float = Field(0.45, alias="RETRIEVAL_CONFIDENCE")
+
+    # ── Life sim(生活模拟器:离线预生成她的线下生活)───────────────
+    life_sim_enabled: bool = Field(True, alias="LIFE_SIM_ENABLED")
+    life_sim_min_interval_hours: float = Field(6.0, alias="LIFE_SIM_MIN_INTERVAL_HOURS")
+    life_sim_fresh_target: int = Field(2, alias="LIFE_SIM_FRESH_TARGET")  # 新鲜种子低于此数才补写
+    # 话题种子注入的冷却轮数(距上次注入至少隔这么多轮)
+    seed_cooldown_turns: int = Field(6, alias="SEED_COOLDOWN_TURNS")
+
+    # ── Schedule(日程表)──────────────────────────────────────────
+    schedule_enabled: bool = Field(True, alias="SCHEDULE_ENABLED")
+
     # ── Dream ─────────────────────────────────────────────────────
     # Auto-dream is ON: after a turn commits, the pipeline fires should_dream()
     # and, if the pending backlog is high enough, runs a Dream cycle in the

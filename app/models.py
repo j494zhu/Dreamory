@@ -50,8 +50,10 @@ class Speaker(str, enum.Enum):
 
 
 class MemoryKind(str, enum.Enum):
-    message = "message"   # raw conversational stream (tagged only by vector)
-    passage = "passage"   # distilled fact/passage produced by Dream (gets tags)
+    message = "message"       # raw conversational stream (tagged only by vector)
+    passage = "passage"       # distilled fact/passage produced by Dream (gets tags)
+    life_event = "life_event" # 她线下生活里发生的事(生活模拟器生成,即刻成为正史)
+    # NOTE 旧库升级需手动: ALTER TYPE memory_kind ADD VALUE IF NOT EXISTS 'life_event';
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -66,6 +68,9 @@ class Chat(Base):
     persona: Mapped[dict] = mapped_column(JSONB, default=dict)   # Persona.to_dict()
     affect: Mapped[dict] = mapped_column(JSONB, default=dict)    # AffectState.to_dict()
     goal: Mapped[str | None] = mapped_column(Text, nullable=True)  # L1 "当前目标"
+    # 核心人格数据化(为"自我迭代"打地基):非空时覆盖 identity.py 编译的默认块。
+    # 修改必须走 config_store.snapshot() 留版本,不允许静默改写。
+    core_identity: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_active: Mapped[object] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -184,4 +189,71 @@ class TimerPing(Base):
     topic: Mapped[str] = mapped_column(Text, default="")          # 她的备忘:到时候要说什么
     # pending -> firing -> fired | failed
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    created_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Chat config revisions — 自我迭代的地基:persona / core_identity / goal
+#  的 append-only 快照史。任何一次配置变更前先落一条快照,崩了可回退。
+# ──────────────────────────────────────────────────────────────────
+class ChatRevision(Base):
+    __tablename__ = "chat_revisions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
+    chat_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), index=True
+    )
+    rev: Mapped[int] = mapped_column(Integer)                     # 每 chat 递增
+    data: Mapped[dict] = mapped_column(JSONB, default=dict)       # {persona, core_identity, goal}
+    reason: Mapped[str] = mapped_column(Text, default="")         # 为什么改(user_edit / rollback / …)
+    actor: Mapped[str] = mapped_column(String(16), default="user")  # user | model | system
+    created_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Schedule — 她的日程表。routine = 长期作息(睡觉/上班,按星期+时段重复),
+#  oneoff = 一次性事项(交稿/约了朋友,有确切到点时间)。
+#  日程不进记忆三槽:活动窗口被编译成 L1 的独立【你的生活】块。
+# ──────────────────────────────────────────────────────────────────
+class ScheduleItem(Base):
+    __tablename__ = "schedule_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
+    chat_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(16), default="routine")  # routine | oneoff
+    label: Mapped[str] = mapped_column(String(200))                   # "睡觉" / "给甲方交稿"
+    # routine: 周几生效(0=周一…6=周日,NULL=每天)+ "HH:MM" 起止(可跨午夜)
+    days: Mapped[list[int] | None] = mapped_column(ARRAY(Integer), nullable=True)
+    start_hm: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    end_hm: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    # oneoff: 到点时间
+    due_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active|done|cancelled
+    source: Mapped[str] = mapped_column(String(16), default="default")  # default | life_sim | model
+    created_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Life events — 生活模拟器离线预生成的"她线下经历的事"。
+#  生成即正史:内容同时写入 L3(kind=life_event,memory_id 回链),细节只生成
+#  一次,之后靠检索复述 —— 这是话题转移不"越编越露馅"的关键。
+#  本表只承载种子调度元数据(状态/情绪色彩/发生时间),内容不二存。
+# ──────────────────────────────────────────────────────────────────
+class LifeEvent(Base):
+    __tablename__ = "life_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
+    chat_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), index=True
+    )
+    memory_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("memories.id", ondelete="SET NULL"), nullable=True
+    )
+    valence: Mapped[float] = mapped_column(Float, default=0.0)    # 情绪色彩 -1(糟心)~+1(开心)
+    occurs_ms: Mapped[int] = mapped_column(BigInteger, index=True)  # 事件发生时间
+    # fresh(可当话题种子) -> mentioned(已注入过,不再当新鲜事) | expired(过了保鲜期)
+    status: Mapped[str] = mapped_column(String(16), default="fresh", index=True)
+    injected_count: Mapped[int] = mapped_column(Integer, default=0)
     created_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)

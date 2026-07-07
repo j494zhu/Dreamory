@@ -47,3 +47,12 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
+        # 0.2.2 升级:旧库的 memory_kind 枚举补 life_event 值(幂等;
+        # 新库 create_all 建类型时已带全值,这里是 no-op)。PG12+ 允许事务内 ADD VALUE。
+        await conn.execute(
+            text("ALTER TYPE memory_kind ADD VALUE IF NOT EXISTS 'life_event'")
+        )
+        # 旧库补 chats.core_identity 列(create_all 不改已有表)
+        await conn.execute(
+            text("ALTER TABLE chats ADD COLUMN IF NOT EXISTS core_identity TEXT")
+        )

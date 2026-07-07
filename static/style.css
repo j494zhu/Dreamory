@@ -111,6 +111,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .card h4 { font-size: 12px; margin-bottom: 8px; color: var(--text); }
 .card pre { font-size: 11px; color: var(--muted); white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow-y: auto; }
 .thinking { font-style: italic; color: var(--accent); font-size: 13px; line-height: 1.5; }
+.muted-line { font-size: 11px; color: var(--muted); line-height: 1.5; word-break: break-word; }
 
 .gauge { margin-bottom: 8px; }
 .gauge label { font-size: 11px; color: var(--muted); display: block; margin-bottom: 3px; }

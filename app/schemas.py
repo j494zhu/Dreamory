@@ -30,6 +30,8 @@ class ChatUpdate(BaseModel):
     title: str | None = None
     goal: str | None = None
     persona: PersonaIn | None = None
+    # 数据化的核心人格文本(非空覆盖 identity.py 的出厂编译;变更自动留版本快照)
+    core_identity: str | None = None
 
 
 class ChatOut(BaseModel):
@@ -38,6 +40,15 @@ class ChatOut(BaseModel):
     goal: str | None
     persona: dict
     affect: dict
+    core_identity: str | None = None
+
+
+class RevisionOut(BaseModel):
+    rev: int
+    reason: str
+    actor: str
+    created_ms: int
+    data: dict
 
 
 class ChatSummary(BaseModel):

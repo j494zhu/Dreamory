@@ -131,21 +131,35 @@ def _render_scalars(state: AffectState) -> str:
         lines.append("你的耐心已经快耗尽了,再被敷衍一次你就不想聊了。")
     if state.security < 0.35:
         lines.append("你最近对这段关系很没有安全感,他的话稍有歧义你都会往坏处想。")
+    # 激素残留 → 身体感受(绝不说数值,只说体感)
+    if state.adrenaline > 0.5:
+        lines.append("你现在心跳很快、有点上头——激动也好火气也好,消息会打得又快又冲,来不及斟酌。")
+    if state.oxytocin > 0.4:
+        lines.append("刚才的亲密还留着余温,你比平时更软、更黏,看什么都顺眼一点。")
+    if state.cortisol > 0.5:
+        lines.append("这一两天积着的压力还没散:你其实有点累,容易烦,对小事的容忍度比平时低。")
     return "\n".join(lines)
 
 
 def render(state: AffectState, persona: Persona,
            core_identity: str = "", memory_block: str = "",
            goal: str | None = None, time_context: str = "",
-           proactive: str = "", allow_timer: bool = False) -> str:
+           proactive: str = "", allow_timer: bool = False,
+           schedule_block: str = "", topic_seed: str = "",
+           allow_tools: bool = False, memory_hint: str = "") -> str:
     """
     把 affect 状态 + L1 记忆区编译成 system prompt。
-      core_identity — L1【核心人格】(固化,见 conversation/identity)
+      core_identity — L1【核心人格】(固化或 chat.core_identity 数据化覆盖)
       memory_block  — L1 记忆三槽(刻骨铭心 / 工作记忆 / L3检索)已组装好的文本
       goal          — L1【当前目标】
       time_context  — 时间感知(现在几点、距上次说话多久),让她"活在钟表里"
       proactive     — 非空时表示这是定时器触发的主动发消息(隐藏调用),内容为情境说明
-      allow_timer   — 是否允许她在回复末尾用 <timer> 标签约一个"过会儿来找他"
+      allow_timer   — 是否允许她定"过会儿来找他"的闹钟(工具开启时走 set_timer,
+                      否则退回 <timer> 标签)
+      schedule_block— L1【你的生活】:日程编译出的"你现在按理在做什么/接下来的安排"
+      topic_seed    — 话题种子:她生活里一件想说的新鲜事(注意力转移的素材)
+      allow_tools   — 生成端是否开了工具(search_memory / grep_memory / set_timer)
+      memory_hint   — 检索置信度提示(自动回忆很模糊时,提醒她可以主动去翻)
     """
     low_expr = persona.expressiveness < 0.8
 
@@ -168,6 +182,11 @@ def render(state: AffectState, persona: Persona,
     if time_context:
         blocks.append(f"【时间感知】\n{time_context}")
 
+    # 【你的生活】日程编译块:她此刻按理在做什么、接下来有什么安排。
+    # 这是"活在自己的生活里"的底色 —— 半夜被消息吵醒、上班时回复慢都从这里来。
+    if schedule_block:
+        blocks.append(f"【你的生活】\n{schedule_block}")
+
     if goal:
         blocks.append(f"【当前目标】\n{goal}")
 
@@ -189,6 +208,18 @@ def render(state: AffectState, persona: Persona,
     if style_hint:
         blocks.append(f"【语气提示】\n{style_hint}")
 
+    # 话题种子:她生活里一件还没说的新鲜事(素材由生活模拟器预生成并已是正史,
+    # 何时递进来由 pipeline 的确定性信号决定;这里只教"怎么用不显得突兀")。
+    if topic_seed:
+        blocks.append(
+            "【心里冒出来的话题】\n"
+            f"你今天经历了这件事,一直想跟他说:『{topic_seed}』\n"
+            "如果眼下话题正聊得起劲,先别打断;如果话题淡了、没什么可接的,"
+            "或者你正想换个话题,就自然地把它带出来——像随口想起一样,"
+            "可以先接住他上一句再转,不要生硬地宣布'我跟你说个事'。"
+            "只挑要紧的细节说,别一次全倒出来。"
+        )
+
     if proactive:
         blocks.append(f"【主动发消息(重要情境)】\n{proactive}")
 
@@ -198,8 +229,26 @@ def render(state: AffectState, persona: Persona,
             "\n绝对不要说出、承认或解释你处于什么'状态'——状态只通过行为体现。"
         )
 
-    # 定时器能力:独立成块(放在输出格式前,足够显眼)
-    if allow_timer:
+    # 工具能力:主动回忆 + 定闹钟(工具协议开启时)
+    if allow_tools:
+        tool_lines = [
+            "【主动回忆(你可以真的去翻记忆)】",
+            "自动想起的内容已放在上面的记忆区。当你觉得'这事我们好像聊过'但手头没有细节时"
+            "——尤其他在问过去的事、约定、名字、日期——先用工具翻一下再回,不要凭空编:",
+            "  - search_memory: 按含义回想(也能按当时的心情搜);一次没中可以换措辞再搜。",
+            "  - grep_memory: 记得关键词(名字/数字/原话)时精确查找。",
+        ]
+        if allow_timer:
+            tool_lines.append(
+                "  - set_timer: 定一个真实闹钟,到点你会主动去找他。你说了'等我一会儿'"
+                "'过会儿来找你',或他叫你过段时间去找他而你答应了,就必须定;定了才算数。"
+            )
+        tool_lines.append("寒暄和眼前聊着的事不用翻记忆;一轮翻两三次就该给出回复了。")
+        if memory_hint:
+            tool_lines.append(memory_hint)
+        blocks.append("\n".join(tool_lines))
+    elif allow_timer:
+        # 工具未开启:退回 <timer> 标签协议
         blocks.append(
             "【定时器:你可以真的'过会儿来找他'】\n"
             "你有一个真实的定时器:在所有 <reply> 之后追加一行 "
