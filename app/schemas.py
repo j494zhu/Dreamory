@@ -16,6 +16,7 @@ class PersonaIn(BaseModel):
     expressiveness: float | None = None
     base_patience: int | None = None
     security_baseline: float | None = None
+    insight: float | None = None   # 内省力 0~1:自我解释有多接近真实动因
 
 
 # ── Chat ─────────────────────────────────────────────────────────────

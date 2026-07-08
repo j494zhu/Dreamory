@@ -177,6 +177,9 @@ function renderDebug(d) {
   $("#dbg-guard").textContent = d.guardrail
     ? `🛡 守护触发: ${(d.guardrail.triggered || []).join("、")} → 重生成${d.guardrail.clean_after_retry ? "已修复" : "仍有残留(照发)"}`
     : "🛡 守护未触发";
+  $("#dbg-narrative").textContent = d.self_narrative
+    ? "🎭 她以为的原因: " + d.self_narrative
+    : "🎭 (无自我解释口径)";
   const toolsUl = $("#dbg-tools");
   toolsUl.innerHTML = "";
   (d.tools || []).forEach((t) => {

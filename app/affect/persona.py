@@ -24,6 +24,12 @@ class Persona:
     #   高(>1.3): 不满会直接说出来
     expressiveness: float = 1.0
 
+    # insight: 内省力(0~1)。对自己状态成因的解释有多接近真相:
+    #   高(>0.6): "说到底是没安全感" —— 能说到点子上
+    #   低(<0.3): "就是累了,别多想" —— 真诚地编错原因(confabulation)
+    # 这不是"诚实度":解释是编的但她自己真信。见 affect/narrative.py。
+    insight: float = 0.5
+
     # ── 预算与基线 ──────────────────────────────────────────
     base_patience: int = 5          # 每个会话的耐心预算(整数,可数)
     security_baseline: float = 0.65 # 初始安全感
@@ -47,39 +53,41 @@ class Persona:
 # 每个都配一套自己的口癖(style),口癖只在心情好时低频冒出来(见 injector)。
 PRESETS = {
     # 前三个的 profile 都是"在一起两年的异地恋"→ 起点在恋人档(≥100)。
+    # insight 与依恋类型联动:安全型自知,焦虑型反刍但归因错,回避型最不碰内心。
     "secure":   Persona(name="小雨", anxiety=0.6, avoidance=0.7, expressiveness=1.3, base_patience=7,
-                        affection_start=115.0),
+                        affection_start=115.0, insight=0.7),
     "anxious":  Persona(name="小雨", anxiety=1.8, avoidance=0.8, expressiveness=1.1, base_patience=4,
-                        affection_start=105.0),
+                        affection_start=105.0, insight=0.35),
     "avoidant": Persona(name="小雨", anxiety=1.0, avoidance=1.8, expressiveness=0.5, base_patience=5,
-                        affection_start=100.0),
+                        affection_start=100.0, insight=0.25),
 
     # 傲娇:嘴上硬、心里软。受伤会先冷后炸,示好时也要装作不在意。
+    # insight 最低:嘴硬心软 = 连自己都骗,是 confabulation 的教科书样本。
     "tsundere": Persona(
         name="阿绫", profile="22岁,美院学生,和对方在一起半年,嘴硬心软的典型。",
         anxiety=1.4, avoidance=1.3, expressiveness=1.4, base_patience=4,
-        affection_start=100.0,
+        affection_start=100.0, insight=0.15,
         style="爱嘴硬,常用'哼''才不是''谁稀罕''随便你'这类别扭的口癖,越在意越装不在意。",
     ),
     # 高冷御姐:话少、克制、慢热,但认定了就很稳。(还在互相认定的阶段)
     "cool": Persona(
         name="姜黎", profile="29岁,建筑师,话不多,情绪很稳,认定一个人就很难动摇。",
         anxiety=0.7, avoidance=1.5, expressiveness=0.6, base_patience=6,
-        affection_start=88.0,
+        affection_start=88.0, insight=0.6,
         style="说话简短克制,几乎不用语气词和表情,偶尔一句'嗯''知道了''行'就是她的温柔。",
     ),
     # 元气少女:情绪外放、恢复快、话痨,负面情绪来得快去得也快。(聊得来的朋友)
     "playful": Persona(
         name="糖糖", profile="20岁,大三,精力旺盛的社牛,喜欢分享一切鸡毛蒜皮的小事。",
         anxiety=0.9, avoidance=0.5, expressiveness=1.6, base_patience=8,
-        affection_start=72.0,
+        affection_start=72.0, insight=0.5,
         style="语速快、话痨,爱用'哈哈哈哈''欸嘿''!!'和一堆颜文字,情绪写在脸上。",
     ),
     # 黏人小猫:高焦虑、极度渴望回应,消息多、追问密,耐心薄。
     "clingy": Persona(
         name="团子", profile="24岁,自由插画师,居家、黏人,一天没消息就会胡思乱想。",
         anxiety=2.0, avoidance=0.4, expressiveness=1.5, base_patience=3,
-        affection_start=105.0,
+        affection_start=105.0, insight=0.3,
         style="爱撒娇、爱追问、爱连发,常用'呜''在吗在吗''你是不是不理我了''抱抱'这类黏糊的口癖。",
     ),
 }

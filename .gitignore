@@ -15,3 +15,5 @@ env/
 *.sqlite3
 models_cache/
 files/
+# 老化脚手架的报告输出
+sim_out/

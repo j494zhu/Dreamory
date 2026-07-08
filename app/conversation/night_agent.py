@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import clock
 from app.affect.persona import PRESETS, Persona
 from app.affect.state import AffectState
 from app.config import settings
@@ -56,7 +57,7 @@ async def should_run(session: AsyncSession, chat: Chat,
                      now_dt: datetime | None = None) -> bool:
     if not settings.night_agent_enabled:
         return False
-    now_dt = now_dt or datetime.now()
+    now_dt = now_dt or clock.now_dt()
 
     if now_ms() - (chat.last_night_run_ms or 0) < settings.night_min_gap_hours * 3600_000:
         return False
@@ -163,7 +164,7 @@ def _build_prompt(persona: Persona, state: AffectState, transcript: str,
 async def run_night(session: AsyncSession, chat: Chat, *, force: bool = False) -> dict:
     """一次完整夜跑。返回 report(干了什么)。调用方保证并发互斥。"""
     report: dict = {"ran": True}
-    now_dt = datetime.now()
+    now_dt = clock.now_dt()
     persona = Persona.from_dict(chat.persona) if chat.persona else PRESETS["anxious"]
     state = AffectState.from_dict(chat.affect) if chat.affect else AffectState.fresh(persona)
 
@@ -277,7 +278,7 @@ class NightService:
         from app.db import SessionLocal
 
         async with SessionLocal() as session:
-            cutoff = datetime.now() - timedelta(days=14)
+            cutoff = clock.now_dt() - timedelta(days=14)
             chats = (
                 await session.execute(
                     select(Chat).where(Chat.last_active >= cutoff)

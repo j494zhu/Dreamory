@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import clock
 from app.models import ScheduleItem, now_ms
 
 UPCOMING_HORIZON_MS = 48 * 3600 * 1000   # 只把 48 小时内的安排编进 L1
@@ -119,7 +120,7 @@ def _fmt_due(due_ms: int, now: datetime) -> str:
 
 def render_block(items: list[ScheduleItem], now: datetime | None = None) -> str:
     """编译【你的生活】块。空日程返回空串(块不注入)。"""
-    now = now or datetime.now()
+    now = now or clock.now_dt()
     lines: list[str] = []
 
     cur = current_routine(items, now)

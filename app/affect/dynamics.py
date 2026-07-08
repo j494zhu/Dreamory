@@ -8,7 +8,9 @@
   transition()    模式状态机(带滞回)
 """
 from __future__ import annotations
-import time
+
+from app import clock
+
 from .state import (
     AFFECTION_MAX,
     AFFECTION_MIN,
@@ -127,7 +129,7 @@ def _patience_bonus(affection: float) -> int:
 
 
 def apply_time(state: AffectState, persona: Persona, now: float | None = None) -> None:
-    now = now or time.time()
+    now = now or clock.now_s()
     gap = max(0.0, now - state.last_ts)
 
     # 只有 arousal 与激素自然冷却。security 不自发回升,open_loops 不衰减。
@@ -150,6 +152,9 @@ def apply_time(state: AffectState, persona: Persona, now: float | None = None) -
         state.patience = max(1, persona.base_patience + _patience_bonus(state.affection) - cortisol_drag)
         state.warm_streak = warm_streak_floor(state.affection)
         state.dull_streak = 0
+        # 新会话:昨天编的"我就是累了"翻篇了,解释口径重置(narrative.py 按需再生成)
+        state.self_narrative = ""
+        state.narrative_mode = ""
         for loop in state.open_loops:
             loop.sessions_old += 1                   # 挂起的事熬过了一晚,更重了
         _escalate_old_loops(state)

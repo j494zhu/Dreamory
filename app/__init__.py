@@ -1,3 +1,3 @@
 """Dreamory — emotion-aware companion with a three-tier memory system."""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

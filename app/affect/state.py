@@ -8,9 +8,10 @@
                    "我们走到哪一步了"的长程刻度,升得慢、掉得也有底。
 """
 from __future__ import annotations
-import time
 import uuid
 from dataclasses import dataclass, field, asdict
+
+from app import clock
 
 MODES = ("warm", "neutral", "probing", "withdrawn", "conflict", "repair_pending")
 
@@ -85,10 +86,17 @@ class AffectState:
     dull_streak: int = 0          # 连续"没什么可接的"轮数(话题变淡的计数器)
     last_shift_turn: int = -999   # 上次注入话题种子的轮数(冷却用)
 
+    # ── 自我解释(confabulation:解释与真实动因分离)────────────────────
+    # 她对自己当前状态"以为的原因"——由 narrative.py 的错误归因规则表生成,
+    # 会话内黏性(同一口径),跨会话/模式切换才刷新。真实动因只驱动行为,不进解释。
+    self_narrative: str = ""
+    narrative_mode: str = ""      # 生成解释时的 mode(模式变了要换口径)
+    narrative_turn: int = -999    # 生成解释的轮次(过老强制刷新)
+
     repair_attempts: int = 0  # 当前冷战/冲突里他连续尝试哄的次数(保底松动用,消气或重新开吵时清零)
     warm_streak: int = 0      # 连续正面回应计数(进入 warm 的条件)
     turn: int = 0
-    last_ts: float = field(default_factory=time.time)
+    last_ts: float = field(default_factory=clock.now_s)
 
     # ── 序列化(存库用)─────────────────────────────────────
     def to_dict(self) -> dict:

@@ -217,6 +217,18 @@ def render(state: AffectState, persona: Persona,
     if scalars:
         blocks.append(f"【此刻的状态】\n{scalars}")
 
+    # 自我解释(confabulation):解释与真实动因分离。真实状态只驱动行为;
+    # 被问"怎么了"时她说的是这个口径——而且她自己真信(narrative.py 生成,黏性)。
+    if state.self_narrative:
+        blocks.append(
+            "【你自己以为的原因(你真心相信这个)】\n"
+            f"如果他问你怎么了/是不是生气了/为什么不高兴,你心里的答案是:"
+            f"『{state.self_narrative}』\n"
+            "上面那些真实的状态成因你自己是意识不到的——它们只从你的行为里流露,"
+            "不会出现在你嘴上的解释里。被问到才说这个解释,说出来是真诚的,"
+            "不是敷衍话术;他不信、继续追问,你会有点烦:你不觉得自己在隐瞒什么。"
+        )
+
     # 口癖低频注入:心情好时偶尔提醒带上说话习惯,不再每轮常驻。
     style_hint = _maybe_style(state, persona)
     if style_hint:

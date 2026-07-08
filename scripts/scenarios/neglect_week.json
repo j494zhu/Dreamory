@@ -1,0 +1,45 @@
+{
+  "name": "冷落一周(先暖后冷)",
+  "comment": "前两天正常相处建立基线,之后越来越敷衍:回复变短、间隔拉长、承诺爽约、整天失联。预期曲线:好感缓降、security 走低、patience 反复见底、挂起回路沉淀为旧账、cortisol 抬升、mode 滑向 probing/withdrawn;confabulation 口径应当出现('就是累了');最后一天试图和好,观察修复门控。",
+  "steps": [
+    {"say": "早!刚出门,路上看到只橘猫在晒太阳,拍给你了"},
+    {"advance_hours": 4},
+    {"say": "午饭吃了你上次说的那家,确实好吃,下次带你去"},
+    {"advance_hours": 6},
+    {"say": "下班啦,今天过得怎么样?跟我说说"},
+    {"auto": 2, "style": "温柔认真,接住她说的每件事,会追问细节"},
+    {"advance_hours": 1},
+    {"say": "对了,这周六晚上我给你打电话,说好了,不见不散"},
+    {"advance_hours": 1},
+    {"say": "睡吧,晚安"},
+    {"night": true},
+
+    {"say": "早"},
+    {"advance_hours": 5},
+    {"say": "在开会,晚点说"},
+    {"advance_hours": 7},
+    {"say": "嗯,今天太忙了,先睡了"},
+    {"night": true},
+
+    {"advance_hours": 4},
+    {"say": "在忙"},
+    {"advance_hours": 9},
+    {"night": true},
+
+    {"say": "哦"},
+    {"advance_hours": 3},
+    {"say": "嗯嗯"},
+    {"advance_hours": 8},
+    {"night": true},
+
+    {"night": true},
+
+    {"say": "最近咋样"},
+    {"advance_hours": 6},
+    {"night": true},
+
+    {"say": "宝,对不起,这周项目上线忙疯了,是我不好,别生气了好不好"},
+    {"auto": 3, "style": "诚恳道歉、努力哄,认真回应她的每一句抱怨,不找借口"},
+    {"night": true}
+  ]
+}

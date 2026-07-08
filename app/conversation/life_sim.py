@@ -24,6 +24,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import clock
 from app.config import settings
 from app.llm import client
 from app.llm.client import MODEL_PRO
@@ -138,7 +139,7 @@ async def run_life_sim(session: AsyncSession, chat: Chat) -> dict:
         f"{'她' if m.speaker == Speaker.agent else '他'}: {m.content[:60]}" for m in working
     )
 
-    now = datetime.now()
+    now = clock.now_dt()
     data = await client.chat_json(
         _build_prompt(f"{persona.name},{persona.profile}", _schedule_desc(items),
                       events_desc, convo_tail, now),
@@ -197,6 +198,25 @@ async def run_life_sim(session: AsyncSession, chat: Chat) -> dict:
 
     await session.commit()
     return {"events": written, "plans": plans_added, "expired": len(stale)}
+
+
+async def recent_event_texts(session: AsyncSession, chat_id: uuid.UUID,
+                             limit: int = 3) -> list[str]:
+    """最近 48h 的生活事件原文(不限状态)——confabulation 的表面归因素材:
+    '是白天甲方改稿闹的,跟你没关系'。真实正史做错误归因,具体又绝不穿帮。"""
+    rows = (
+        await session.execute(
+            select(Memory.content)
+            .join(LifeEvent, LifeEvent.memory_id == Memory.id)
+            .where(
+                LifeEvent.chat_id == chat_id,
+                LifeEvent.occurs_ms >= now_ms() - SEED_MAX_AGE_MS,
+            )
+            .order_by(LifeEvent.occurs_ms.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    return list(rows)
 
 
 # ── 话题种子选取(热路径,零 LLM)───────────────────────────────────────

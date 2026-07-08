@@ -41,7 +41,9 @@ DIM = settings.embedding_dim
 
 
 def now_ms() -> int:
-    return int(time.time() * 1000)
+    # 委托给可注入时钟:生产恒等于真实时间,模拟脚手架可拨快(见 app/clock.py)
+    from app import clock
+    return clock.now_ms()
 
 
 class Speaker(str, enum.Enum):

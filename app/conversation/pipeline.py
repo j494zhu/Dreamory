@@ -39,7 +39,8 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.affect import dynamics, extractor, injector
+from app import clock
+from app.affect import dynamics, extractor, injector, narrative
 from app.affect.persona import PRESETS, Persona
 from app.affect.state import AffectState
 from app.config import settings
@@ -143,7 +144,7 @@ def _humanize_gap(seconds: float) -> str:
 
 
 def _time_context(prev_ts: float, *, now: float | None = None, first_turn: bool = False) -> str:
-    now = now or time.time()
+    now = now or clock.now_s()
     dt = datetime.fromtimestamp(now)
     line = f"现在是{dt.year}年{dt.month}月{dt.day}日 周{_WEEKDAYS[dt.weekday()]} {dt:%H:%M}。"
     gap = max(0.0, now - prev_ts)
@@ -367,7 +368,7 @@ async def handle_message(
     # 1. time effects --------------------------------------------------------
     prev_ts = state.last_ts    # apply_time 会覆盖 last_ts,时间感知要用旧值
     first_turn = state.turn == 0
-    dynamics.apply_time(state, persona, now=time.time())
+    dynamics.apply_time(state, persona, now=clock.now_s())
 
     # context for extraction (state before his new message lands) ------------
     recent = await l3_store.working_memory(session, chat.id, settings.working_memory_k)
@@ -381,6 +382,14 @@ async def handle_message(
     # 3. dynamics (pure code) -----------------------------------------------
     trace = dynamics.apply_events(state, events, persona, her_last, user_content)
     trace += dynamics.transition(state, events, persona)
+
+    # 3.5 自我解释刷新(confabulation,零 LLM):真实动因只驱动行为,
+    #     "她以为的原因"由错误归因规则表生成——生活正史里的糟心事是首选背锅侠。
+    surface: list[str] = []
+    if settings.life_sim_enabled:
+        surface = await life_sim.recent_event_texts(session, chat.id)
+    if narrative.refresh(state, persona, surface_candidates=surface):
+        trace.append(f"自我解释口径: {state.self_narrative or '(翻篇,清空)'}")
 
     # 4. persist his message to L3 + hot-path tagging ------------------------
     user_mem = await l3_store.write_memory(
@@ -544,6 +553,7 @@ async def handle_message(
             "tier_shift": events.get("_tier_shift"),
             "timer_scheduled": timer_scheduled,
             "dull_streak": state.dull_streak,
+            "self_narrative": state.self_narrative or None,
             "topic_seed": topic_seed or None,
             "schedule": schedule_block or None,
             "tools": tool_trace,
@@ -584,7 +594,7 @@ async def handle_timer_fire(
     state = AffectState.from_dict(chat.affect) if chat.affect else AffectState.fresh(persona)
 
     prev_ts = state.last_ts
-    dynamics.apply_time(state, persona, now=time.time())
+    dynamics.apply_time(state, persona, now=clock.now_s())
 
     working = await l3_store.working_memory(session, chat.id, settings.working_memory_k)
     working_ids = {m.id for m in working}

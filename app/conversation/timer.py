@@ -22,6 +22,7 @@ from datetime import datetime
 
 from sqlalchemy import select
 
+from app import clock
 from app.config import settings
 from app.conversation import schedule as sched
 from app.models import Chat, TimerPing, now_ms
@@ -58,7 +59,7 @@ class TimerService:
             # 认领:先置 firing 并提交,进程内轮询不会重复拿到;睡着的顺延保持 pending
             claimed = []
             items_cache: dict = {}
-            now_dt = datetime.now()
+            now_dt = clock.now_dt()
             for ping in due:
                 if settings.schedule_enabled:
                     items = items_cache.get(ping.chat_id)
