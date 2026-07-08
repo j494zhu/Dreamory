@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-07
+
+### Added
+
+- **情绪时间序列(可观测性地基)**:新表 `affect_snapshots`——每轮对话/每次主动
+  消息后把 AffectState 全部物理量落一行(mode/标量/激素/耐心/回路压力/旧账数,
+  外加本轮事件标注),全定长实列可直接聚合。`GET /chats/{id}/affect-history`。
+  前端新增"📈 情绪曲线"卡片:好感度(0~200,虚线恋人线)与状态标量(0~1,
+  security/cortisol/arousal/oxytocin)两张分离量纲的折线图(绝不双轴),
+  系列色在深色面板上跑过 CVD/对比度校验(最小相邻 ΔE 23.7),悬停十字线逐轮读数。
+  这是"改动有没有让角色更真实"从肉眼感觉变成数据判断的前提。
+- **记忆健康度与漂移检测**(`app/memory/health.py`):六项可计算指标 + 阈值旗标
+  + 0~100 总分——打标积压(pending 比例)、词表垄断(单 tag 覆盖 >50%)、
+  近重复灌水(内容向量平均两两余弦)、**情绪轴漂移**(近期情绪质心 vs 既往基线)、
+  **人格漂移**(人格锚点 embed vs 近期言行质心)、模式震荡(状态机切换频率,
+  读时间序列表)。全只读,除人格锚点一次 embed 外零额外调用;数据不足不打旗。
+  `GET /chats/{id}/health` 按需体检;**夜间代理每晚体检,亮旗即强制跑 Dream**
+  ——spec"漂移阈值触发全局维护"的落地。前端"🩺 记忆健康"卡片一键体检。
+- **跨进程部署改造**(`app/db_locks.py`):后台单飞从进程内 asyncio.Lock 下沉到
+  Postgres 会话级 advisory lock(挂在专用 AUTOCOMMIT 连接上,任务中途提交不掉锁,
+  进程崩溃自动释放;try 语义——有人在跑就让过,不排队)。四处接入:auto-dream
+  (全局)、life_sim / night_agent / evolution(per-chat,uuid→int32 派生 key)。
+  定时器认领改 `FOR UPDATE SKIP LOCKED`,多 worker 同扫不重复触发。
+  heat flush 审查确认本就是相对增量 UPDATE,天然多进程安全。
+  已知余留:SSE EventBus 仍是进程内的——多 worker 下主动消息可能推错进程,
+  但消息本体在 L3,刷新即见(符合"缓存可丢"铁律);要实时跨进程推送需 Redis pub/sub。
+
+### Migration
+
+- `python -m scripts.init_db` 幂等建 `affect_snapshots` 表(含 (chat_id, ts_ms)
+  复合索引)。无其他迁移。测试:120 passing(112 + 8 新增:快照构造、健康度
+  纯函数(质心距离/冗余/震荡/评分)、锁 key 派生)。
+
 ## [0.3.0] - 2026-07-07
 
 ### Added

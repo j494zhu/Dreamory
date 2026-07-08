@@ -233,18 +233,23 @@ _bg_tasks: set[asyncio.Task] = set()
 async def _auto_sim(chat_id: uuid.UUID) -> None:
     if not settings.life_sim_enabled or _sim_lock.locked():
         return
-    async with _sim_lock:
+    async with _sim_lock:   # 进程内第一道闸
         from app.db import SessionLocal
+        from app.db_locks import LOCK_LIFE_SIM, advisory_guard, chat_key
 
         try:
-            async with SessionLocal() as s:
-                if not await should_simulate(s, chat_id):
+            # 跨进程单飞(per-chat):别的 worker 正在给这只 chat 补写就让过
+            async with advisory_guard(LOCK_LIFE_SIM, chat_key(chat_id)) as acquired:
+                if not acquired:
                     return
-                chat = await s.get(Chat, chat_id)
-                if chat is None:
-                    return
-                report = await run_life_sim(s, chat)
-                logger.info("life-sim ran for chat %s: %s", chat_id, report)
+                async with SessionLocal() as s:
+                    if not await should_simulate(s, chat_id):
+                        return
+                    chat = await s.get(Chat, chat_id)
+                    if chat is None:
+                        return
+                    report = await run_life_sim(s, chat)
+                    logger.info("life-sim ran for chat %s: %s", chat_id, report)
         except Exception:  # 后台补写绝不能把主流程带崩
             logger.exception("life-sim failed (chat %s)", chat_id)
 

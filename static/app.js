@@ -55,6 +55,7 @@ async function openChat(id) {
 
   subscribeEvents(id);
   refreshTimerHint();
+  loadAffectChart();
 }
 
 // ── SSE:她主动发来的消息(定时器到点)从这里进来 ──────────
@@ -69,6 +70,7 @@ function subscribeEvents(id) {
     if (payload.mode) setMode(payload.mode);
     if (payload.thinking) $("#dbg-thinking").textContent = payload.thinking;
     refreshTimerHint();
+    loadAffectChart();
   };
 }
 
@@ -127,6 +129,7 @@ $("#composer").addEventListener("submit", async (e) => {
     await playAgentMessages(msgs);
     if (res.debug) renderDebug(res.debug);
     refreshTimerHint();
+    loadAffectChart();
   } catch (err) {
     typing.remove();
     addMessage("agent", "⚠️ " + err.message, "error");
@@ -217,6 +220,118 @@ function renderDebug(d) {
 
 function li(text, cls) { const e = document.createElement("li"); if (cls) e.className = cls; e.textContent = text; return e; }
 function setGauge(sel, v) { $(sel).style.width = `${Math.max(0, Math.min(1, v || 0)) * 100}%`; }
+
+// ── 情绪曲线(affect_snapshots 时间序列)──────────────────
+// 两张图分离两种量纲(好感度0~200 / 标量0~1),绝不用双轴。
+// 系列色为在深色面板上验证过的调色板(CVD最小相邻ΔE 23.7,对比度≥3:1)。
+const SCALAR_SERIES = [
+  { key: "security", color: "#3987e5" },
+  { key: "cortisol", color: "#c98500" },
+  { key: "arousal", color: "#e66767" },
+  { key: "oxytocin", color: "#d55181" },
+];
+let vizData = [];   // 最近的快照数组(升序)
+
+function drawChart(canvas, rows, seriesDefs, yMax, { midline = null, hoverIdx = -1 } = {}) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth || 260;
+  const h = +canvas.dataset.h || 64;
+  canvas.style.height = h + "px";        // CSS 高度固定,像素缓冲按 dpr 放大保证清晰
+  canvas.width = W * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, h);
+  const pad = 2;
+
+  // 网格(退居背景):两条水平线 + 可选中线(如恋人线)
+  ctx.strokeStyle = "#272c3a"; ctx.lineWidth = 1;
+  [0.25, 0.75].forEach((f) => {
+    ctx.beginPath(); ctx.moveTo(0, h * f); ctx.lineTo(W, h * f); ctx.stroke();
+  });
+  if (midline !== null) {
+    ctx.setLineDash([3, 3]); ctx.strokeStyle = "#8b91a4";
+    const y = h - pad - (midline / yMax) * (h - pad * 2);
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  if (rows.length < 2) return;
+
+  const x = (i) => (rows.length === 1 ? W / 2 : (i / (rows.length - 1)) * W);
+  const y = (v) => h - pad - Math.max(0, Math.min(1, v / yMax)) * (h - pad * 2);
+
+  for (const s of seriesDefs) {
+    ctx.strokeStyle = s.color; ctx.lineWidth = 2; ctx.lineJoin = "round";
+    ctx.beginPath();
+    rows.forEach((r, i) => { i ? ctx.lineTo(x(i), y(r[s.key])) : ctx.moveTo(x(i), y(r[s.key])); });
+    ctx.stroke();
+  }
+  // 悬停十字线
+  if (hoverIdx >= 0 && hoverIdx < rows.length) {
+    ctx.strokeStyle = "#8b91a4"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x(hoverIdx), 0); ctx.lineTo(x(hoverIdx), h); ctx.stroke();
+  }
+}
+
+function renderCharts(hoverIdx = -1) {
+  const a = $("#viz-affection"), s = $("#viz-scalars");
+  if (!a || !s) return;
+  a.dataset.h = 64; s.dataset.h = 72;
+  drawChart(a, vizData, [{ key: "affection", color: "#f78ca0" }], 200,
+    { midline: 100, hoverIdx });
+  drawChart(s, vizData, SCALAR_SERIES, 1, { hoverIdx });
+}
+
+async function loadAffectChart() {
+  if (!activeChat) return;
+  try {
+    vizData = await api.get(`/api/chats/${activeChat}/affect-history?limit=200`);
+    renderCharts();
+    $("#viz-readout").textContent = vizData.length
+      ? `${vizData.length} 个快照 · 悬停查看逐轮数值`
+      : "还没有快照(聊一轮就有了)";
+  } catch { /* 面板可视化失败不影响聊天 */ }
+}
+
+function vizHover(e) {
+  if (!vizData.length) return;
+  const rect = e.currentTarget.getBoundingClientRect();
+  const idx = Math.round(((e.clientX - rect.left) / rect.width) * (vizData.length - 1));
+  const r = vizData[Math.max(0, Math.min(vizData.length - 1, idx))];
+  renderCharts(idx);
+  $("#viz-readout").textContent =
+    `轮${r.turn} · ${r.mode}${r.event ? " · " + r.event : ""} · 好感${r.affection}` +
+    ` · sec ${r.security} · cor ${r.cortisol} · aro ${r.arousal} · oxy ${r.oxytocin}`;
+}
+["#viz-affection", "#viz-scalars"].forEach((sel) => {
+  const el = $(sel);
+  if (el) {
+    el.addEventListener("mousemove", vizHover);
+    el.addEventListener("mouseleave", () => renderCharts());
+  }
+});
+
+// ── 记忆健康体检 ─────────────────────────────────────────
+async function checkHealth() {
+  if (!activeChat) return;
+  const scoreEl = $("#health-score"), flagsEl = $("#health-flags");
+  scoreEl.textContent = "…";
+  try {
+    const h = await api.get(`/api/chats/${activeChat}/health`);
+    scoreEl.textContent = h.score;
+    scoreEl.className = h.score >= 80 ? "ok" : h.score >= 50 ? "warn" : "bad";
+    flagsEl.innerHTML = "";
+    (h.flags || []).forEach((f) =>
+      flagsEl.appendChild(li(`⚠ ${f.label}(${f.value} > ${f.threshold})`)));
+    if (!h.flags?.length) {
+      flagsEl.innerHTML = `<li style="background:none;color:var(--muted)">— 一切健康 —</li>`;
+    }
+  } catch (err) {
+    scoreEl.textContent = "—";
+    flagsEl.innerHTML = `<li style="background:none;color:var(--muted)">体检失败: ${escapeHtml(err.message)}</li>`;
+  }
+}
+const healthBtn = $("#health-btn");
+if (healthBtn) healthBtn.onclick = checkHealth;
 function escapeHtml(s) { return (s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
 // ── New chat modal ──────────────────────────────────────

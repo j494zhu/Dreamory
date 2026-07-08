@@ -113,6 +113,20 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .thinking { font-style: italic; color: var(--accent); font-size: 13px; line-height: 1.5; }
 .muted-line { font-size: 11px; color: var(--muted); line-height: 1.5; word-break: break-word; }
 
+/* ── 情绪曲线 / 记忆健康 ── */
+.viz { width: 100%; display: block; margin-bottom: 6px; }
+.viz-title { font-size: 11px; color: var(--text); margin: 4px 0 2px; }
+.viz-legend { display: flex; flex-wrap: wrap; gap: 8px; font-size: 10px; color: var(--muted); margin: 2px 0 4px; }
+.viz-legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 3px; vertical-align: middle; }
+.health-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.health-row b { font-size: 22px; }
+.health-row b.ok { color: var(--ok); }
+.health-row b.warn { color: var(--warm); }
+.health-row b.bad { color: var(--danger); }
+.mini-btn { background: var(--panel); color: var(--text); border: 1px solid var(--line);
+  border-radius: 8px; padding: 3px 10px; font-size: 11px; cursor: pointer; }
+.mini-btn:hover { border-color: var(--accent-2); }
+
 .gauge { margin-bottom: 8px; }
 .gauge label { font-size: 11px; color: var(--muted); display: block; margin-bottom: 3px; }
 .bar { background: #0c0e14; border-radius: 6px; height: 8px; overflow: hidden; }

@@ -38,7 +38,13 @@
   自己写下的几行字管最要紧的事;
 - **好感度解锁 persona 演化**(v0.3)—— 升到 crush/lover/devoted/oath 档时,
   她这个人也变一点(新称呼/新习惯/新的自我认知):append-only、每档一次、
-  应用前自动快照可回退——"自我迭代"地基上的第一个真实住户。
+  应用前自动快照可回退——"自我迭代"地基上的第一个真实住户;
+- **情绪时间序列 + 记忆健康度**(v0.4)—— 每轮快照落 `affect_snapshots`,
+  前端画好感度/激素/安全感逐轮曲线(调参终于有了眼睛);六项健康指标
+  (打标积压/词表垄断/近重复灌水/情绪轴漂移/人格漂移/模式震荡)+ 0~100 总分,
+  夜间体检亮旗即强制 Dream 全局维护——"数字生命寿命"的第一块仪表盘;
+- **跨进程部署**(v0.4)—— 后台单飞下沉为 Postgres advisory lock,
+  定时器认领 `FOR UPDATE SKIP LOCKED`,多 worker 部署不再重复跑任务/重复触发闹钟。
 
 > 铁律:**内容只存一份(L3)**;其它层只持 id。**进向量的文本是纯内容**,
 > tag / 时间 / 说话人一律作旁挂列,检索时当 `WHERE` 过滤。**热路径零 LLM**;
@@ -78,12 +84,16 @@
   conversation/night_agent ← 夜间代理:蒸馏→passage / 日记 / 明日计划 / Dream
   conversation/notebook  ← 她的小本子:write_note 随手记 + 日记(model-curated)
   conversation/evolution ← 好感度里程碑 → persona 演化(append-only + 快照)
+  conversation/timeline  ← 情绪时间序列:每轮快照落库 + 历史查询(可观测性)
+  memory/health          ← 记忆健康度:漂移/熵/冗余/震荡 六指标体检(只读)
+  db_locks               ← 跨进程单飞:Postgres advisory lock(多 worker 安全)
                                 │
                                 ▼
                     PostgreSQL + pgvector
             memories(主表 + content_vec + emotion_vec)
             tags / tag_aliases / chats / timer_pings
             schedule_items / life_events / chat_revisions / notes
+            affect_snapshots(情绪时间序列)
 ```
 
 ### 三级记忆与里程碑映射
@@ -158,6 +168,8 @@ L1 检索命中、本轮打的 tag。
 | GET  | `/api/chats/{id}/schedule` | 她的日程表(作息 + 一次性安排) |
 | GET  | `/api/chats/{id}/life-events` | 生活模拟器生成的线下事件(含种子状态) |
 | GET  | `/api/chats/{id}/notes` | 她的小本子(日记 + 随手记) |
+| GET  | `/api/chats/{id}/affect-history` | 情绪时间序列(每轮快照,曲线/调参分析) |
+| GET  | `/api/chats/{id}/health` | 记忆健康体检(六指标 + 旗标 + 总分) |
 | POST | `/api/chats/{id}/night-run` | 手动触发一次夜跑(测试用;平时她睡着后自动跑) |
 | GET  | `/api/chats/{id}/revisions` | 配置版本历史(persona/core_identity/goal 快照) |
 | POST | `/api/chats/{id}/revisions/{rev}/rollback` | 回退到某个历史配置(回退本身也留快照) |
@@ -209,10 +221,16 @@ pytest -q
   非法 HH:MM/越界星期丢弃;日记判空截断);plan_due_ms 落在明天;演化提案校验
   (60字上限/换行清洗/空提案不应用);apply append-only(名字永不动);
   低档不在解锁表。
+- `tests/test_timeline_health.py` —— 快照构造(回路压力/未解决旧账数/事件标注/
+  timer来源);健康度纯函数(质心余弦距离同向≈0正交≈1、全重复冗余≈1、
+  模式震荡计数、评分与标签表一致);跨进程锁 key(确定性/int32范围/锁空间不重)。
 
 ### 当前验证状态
 
-- ✅ 112 个单测通过(88 + 0.3.0 新增 24:守护层/夜间载荷/演化门控/注入器新块),离线 < 1s
+- ✅ 120 个单测通过(112 + 0.4.0 新增 8),离线 < 1s
+- ⚠️ 多进程注记:后台任务与定时器已跨进程安全;SSE EventBus 仍是进程内的,
+  多 worker 下主动消息可能推到没有订阅者的进程——消息本体在 L3,刷新即见
+  (符合"缓存可丢"铁律),需要实时跨进程推送时再上 Redis pub/sub。
 - ⚠️ 0.3.0 的守护层重生成、夜间代理、persona 演化尚未跑真实 DeepSeek 端到端
   (各自都有独立降级路径:守护失败发原文、夜跑单步失败不拖垮整晚、演化失败静默)。
 - ✅ **0.2.0 完整端到端已验证**(Postgres via docker + 真实 DeepSeek/bge-m3):

@@ -42,12 +42,15 @@ class TimerService:
         from app.db import SessionLocal
 
         async with SessionLocal() as session:
+            # FOR UPDATE SKIP LOCKED:多 worker 同时扫表时,行级锁保证每个
+            # 到点闹钟只被一个进程认领,拿不到锁的行直接跳过(不阻塞轮询)。
             due = (
                 await session.execute(
                     select(TimerPing)
                     .where(TimerPing.status == "pending", TimerPing.due_ms <= now_ms())
                     .order_by(TimerPing.due_ms.asc())
                     .limit(8)
+                    .with_for_update(skip_locked=True)
                 )
             ).scalars().all()
             if not due:

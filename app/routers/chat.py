@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.affect.persona import PRESETS, Persona
 from app.affect.state import AffectState
 from app.config import settings
-from app.conversation import config_store, night_agent, notebook, pipeline
+from app.conversation import config_store, night_agent, notebook, pipeline, timeline
 from app.conversation import schedule as sched
 from app.conversation.bus import event_bus, sse_format
 from app.db import SessionLocal, get_session
@@ -143,6 +143,25 @@ async def get_schedule(chat_id: uuid.UUID, session: AsyncSession = Depends(get_s
          "source": i.source}
         for i in items
     ]
+
+
+@router.get("/{chat_id}/health")
+async def get_health(chat_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    """记忆健康度体检:漂移/熵/冗余/震荡指标 + 旗标 + 0~100 总分。"""
+    from app.memory import health as health_mod
+
+    chat = await _get_chat(session, chat_id)
+    return await health_mod.compute_health(session, chat)
+
+
+@router.get("/{chat_id}/affect-history")
+async def get_affect_history(chat_id: uuid.UUID, limit: int = 500,
+                             since_ms: int | None = None,
+                             session: AsyncSession = Depends(get_session)):
+    """情绪状态时间序列(每轮一个快照,前端画曲线/调参分析用)。"""
+    await _get_chat(session, chat_id)
+    rows = await timeline.history(session, chat_id, limit=limit, since_ms=since_ms)
+    return [timeline.to_dict(s) for s in rows]
 
 
 @router.get("/{chat_id}/notes")

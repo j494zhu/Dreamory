@@ -243,10 +243,23 @@ async def run_night(session: AsyncSession, chat: Chat, *, force: bool = False) -
     chat.last_night_run_ms = now_ms()
     await session.commit()
 
-    # 5. Dream(tag 维护,自带提交;放最后,失败无所谓)
+    # 5. 记忆健康体检(只读):有旗标 → 触发全局维护(强制跑一次 Dream)
+    unhealthy = False
     try:
-        if settings.dream_enabled and await dream.should_dream(session):
-            report["dream"] = await dream.run_dream(session)
+        from app.memory import health as health_mod
+
+        hp = await health_mod.compute_health(session, chat)
+        report["health"] = {"score": hp["score"],
+                            "flags": [f["key"] for f in hp["flags"]]}
+        unhealthy = bool(hp["flags"])
+    except Exception:
+        logger.exception("night health check failed (chat %s)", chat.id)
+
+    # 6. Dream(tag 维护,自带提交;放最后,失败无所谓)。
+    #    健康度亮旗时不等积压阈值,直接强制维护 —— spec"漂移阈值触发全局维护"。
+    try:
+        if settings.dream_enabled and (unhealthy or await dream.should_dream(session)):
+            report["dream"] = await dream.run_dream(session, force=unhealthy)
     except Exception:
         logger.exception("night dream failed (chat %s)", chat.id)
 
@@ -280,15 +293,20 @@ class NightService:
 
     async def _run_one(self, chat_id: uuid.UUID) -> None:
         from app.db import SessionLocal
+        from app.db_locks import LOCK_NIGHT, advisory_guard, chat_key
 
-        async with self._lock:
+        async with self._lock:   # 进程内第一道闸
             try:
-                async with SessionLocal() as session:
-                    chat = await session.get(Chat, chat_id)
-                    if chat is None or not await should_run(session, chat):
-                        return   # 醒了/刚跑过,让过
-                    report = await run_night(session, chat)
-                    logger.info("night agent ran for chat %s: %s", chat_id, report)
+                # 跨进程单飞(per-chat):锁内重查 should_run,双保险
+                async with advisory_guard(LOCK_NIGHT, chat_key(chat_id)) as acquired:
+                    if not acquired:
+                        return
+                    async with SessionLocal() as session:
+                        chat = await session.get(Chat, chat_id)
+                        if chat is None or not await should_run(session, chat):
+                            return   # 醒了/刚被别的进程跑过,让过
+                        report = await run_night(session, chat)
+                        logger.info("night agent ran for chat %s: %s", chat_id, report)
             except Exception:
                 logger.exception("night agent failed (chat %s)", chat_id)
 

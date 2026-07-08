@@ -244,6 +244,44 @@ class ScheduleItem(Base):
 #  本表只承载种子调度元数据(状态/情绪色彩/发生时间),内容不二存。
 # ──────────────────────────────────────────────────────────────────
 # ──────────────────────────────────────────────────────────────────
+#  Affect snapshots — 情绪状态的时间序列(可观测性)。
+#  每轮对话/每次主动消息后落一行,前端画好感度/激素/安全感曲线,
+#  健康度模块用它算模式震荡。全是定长物理量 → 存实列不存 JSONB,可直接聚合。
+# ──────────────────────────────────────────────────────────────────
+class AffectSnapshot(Base):
+    __tablename__ = "affect_snapshots"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
+    chat_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), index=True
+    )
+    ts_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+    turn: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(8), default="message")  # message | timer
+
+    mode: Mapped[str] = mapped_column(String(16), default="neutral")
+    arousal: Mapped[float] = mapped_column(Float, default=0.0)
+    security: Mapped[float] = mapped_column(Float, default=0.0)
+    affection: Mapped[float] = mapped_column(Float, default=0.0)
+    adrenaline: Mapped[float] = mapped_column(Float, default=0.0)
+    oxytocin: Mapped[float] = mapped_column(Float, default=0.0)
+    cortisol: Mapped[float] = mapped_column(Float, default=0.0)
+    patience: Mapped[int] = mapped_column(Integer, default=0)
+    warm_streak: Mapped[int] = mapped_column(Integer, default=0)
+    dull_streak: Mapped[int] = mapped_column(Integer, default=0)
+    loop_pressure: Mapped[int] = mapped_column(Integer, default=0)   # 挂起回路权重和
+    grievances: Mapped[int] = mapped_column(Integer, default=0)      # 未解决旧账数
+
+    # 本轮发生了什么(标注曲线上的事件点)
+    event: Mapped[str] = mapped_column(String(24), default="")   # his_response_type
+    bid: Mapped[str] = mapped_column(String(24), default="")     # bid_in_her_last_msg
+
+    __table_args__ = (
+        Index("ix_affect_snapshots_chat_ts", "chat_id", "ts_ms"),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────
 #  Notes — 她的小本子(model-curated 记忆,借鉴 memory-tool 的文件式思路)。
 #  日记由夜间代理写;note 由她在对话里 write_note 随手记。
 #  这是独立的文档类存储(她写的笔记本),不是 memories 的副本 —— 铁律 1 无涉。

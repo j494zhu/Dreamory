@@ -146,14 +146,20 @@ _bg_tasks: set[asyncio.Task] = set()
 async def _run_bg(chat_id: uuid.UUID, tier_key: str) -> None:
     if _evo_lock.locked():
         return
-    async with _evo_lock:
+    async with _evo_lock:   # 进程内第一道闸
         from app.db import SessionLocal
+        from app.db_locks import LOCK_EVOLUTION, advisory_guard, chat_key
 
         try:
-            async with SessionLocal() as s:
-                chat = await s.get(Chat, chat_id)
-                if chat is not None:
-                    await run_evolution(s, chat, tier_key)
+            # 跨进程单飞(per-chat):锁内 run_evolution 会重查 already_evolved,
+            # "两个进程同时通过查重然后双双演化"的竞态由这把锁关死。
+            async with advisory_guard(LOCK_EVOLUTION, chat_key(chat_id)) as acquired:
+                if not acquired:
+                    return
+                async with SessionLocal() as s:
+                    chat = await s.get(Chat, chat_id)
+                    if chat is not None:
+                        await run_evolution(s, chat, tier_key)
         except Exception:   # 演化是彩蛋,失败静默,绝不影响对话
             logger.exception("persona evolution failed (chat %s)", chat_id)
 

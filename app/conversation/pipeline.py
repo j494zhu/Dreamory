@@ -43,7 +43,7 @@ from app.affect import dynamics, extractor, injector
 from app.affect.persona import PRESETS, Persona
 from app.affect.state import AffectState
 from app.config import settings
-from app.conversation import evolution, guardrail, life_sim, notebook, tools
+from app.conversation import evolution, guardrail, life_sim, notebook, timeline, tools
 from app.conversation import schedule as sched
 from app.conversation.identity import build_core_identity
 from app.llm import client
@@ -217,14 +217,19 @@ _bg_tasks: set[asyncio.Task] = set()
 async def _auto_dream() -> None:
     if not settings.dream_enabled or _dream_lock.locked():
         return
-    async with _dream_lock:
+    async with _dream_lock:   # 进程内第一道闸(零成本)
         from app.db import SessionLocal
+        from app.db_locks import LOCK_DREAM, advisory_guard
 
         try:
-            async with SessionLocal() as s:
-                if await dream.should_dream(s):
-                    report = await dream.run_dream(s)
-                    logger.info("auto-dream ran: %s", report)
+            # 跨进程单飞:别的 worker 正在做梦就让过
+            async with advisory_guard(LOCK_DREAM) as acquired:
+                if not acquired:
+                    return
+                async with SessionLocal() as s:
+                    if await dream.should_dream(s):
+                        report = await dream.run_dream(s)
+                        logger.info("auto-dream ran: %s", report)
         except Exception:  # 后台维护绝不能把主流程带崩
             logger.exception("auto-dream failed")
 
@@ -495,8 +500,9 @@ async def handle_message(
         ))
         timer_scheduled = timer_req
 
-    # 8. save affect ---------------------------------------------------------
+    # 8. save affect + timeline snapshot --------------------------------------
     chat.affect = state.to_dict()
+    timeline.record(session, chat.id, state, source="message", events=events)
     await session.commit()
 
     # 后台离线维护:回复已提交,趁机检查是否该做梦/补写生活(不阻塞本次响应)。
@@ -652,6 +658,7 @@ async def handle_timer_fire(
 
     await _persist_agent_replies(session, chat.id, replies, thinking, state)
     chat.affect = state.to_dict()
+    timeline.record(session, chat.id, state, source="timer")
     await session.flush()
 
     return {

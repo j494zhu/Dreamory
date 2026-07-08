@@ -75,6 +75,30 @@
       </section>
 
       <section class="card">
+        <h4>📈 情绪曲线 <span class="muted">按轮次</span></h4>
+        <div class="viz-title">好感度 <span class="muted">0~200,虚线=恋人线</span></div>
+        <canvas id="viz-affection" class="viz" height="64"></canvas>
+        <div class="viz-title">状态标量 <span class="muted">0~1</span></div>
+        <canvas id="viz-scalars" class="viz" height="72"></canvas>
+        <div class="viz-legend">
+          <span><i style="background:#3987e5"></i>security</span>
+          <span><i style="background:#c98500"></i>cortisol</span>
+          <span><i style="background:#e66767"></i>arousal</span>
+          <span><i style="background:#d55181"></i>oxytocin</span>
+        </div>
+        <p id="viz-readout" class="muted-line">—</p>
+      </section>
+
+      <section class="card">
+        <h4>🩺 记忆健康 <span class="muted">漂移 · 熵 · 冗余 · 震荡</span></h4>
+        <div class="health-row">
+          <b id="health-score">—</b>
+          <button id="health-btn" class="mini-btn">体检</button>
+        </div>
+        <ul id="health-flags" class="trace"></ul>
+      </section>
+
+      <section class="card">
         <h4>🌱 她的生活 <span class="muted">日程 · 话题种子 · 工具</span></h4>
         <p id="dbg-schedule" class="muted-line">—</p>
         <p id="dbg-seed" class="muted-line">—</p>
