@@ -1,0 +1,9 @@
+{
+  "name": "A3-10分钟承诺不兑现-等催",
+  "comment": "他说10分钟后打电话→不兑现→等11分钟后tick→她主动来催。COMMITMENT_PING_DELAY_MIN=1所以过点1分钟就触发。",
+  "steps": [
+    {"say": "我10分钟后打电话给你"},
+    {"advance_hours": 0.2},
+    {"tick_timers": true}
+  ]
+}

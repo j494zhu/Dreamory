@@ -80,8 +80,10 @@ async function refreshTimerHint() {
   if (!activeChat || !el) return;
   try {
     const timers = await api.get(`/api/chats/${activeChat}/timers`);
-    if (timers.length) {
-      const mins = Math.max(1, Math.round((timers[0].due_ms - Date.now()) / 60000));
+    // 只提示她自己约的闹钟;承诺催(kind=commitment)是"他欠她的",不预告
+    const own = timers.filter((t) => (t.kind || "timer") === "timer");
+    if (own.length) {
+      const mins = Math.max(1, Math.round((own[0].due_ms - Date.now()) / 60000));
       el.textContent = `⏰ 她说过会儿来找你(约${mins}分钟后)`;
       el.classList.remove("hidden");
     } else {

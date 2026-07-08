@@ -30,6 +30,9 @@ from app.models import Chat, TimerPing, now_ms
 logger = logging.getLogger(__name__)
 
 SLEEP_DEFER_JITTER_MS = 15 * 60_000   # 顺延到醒来后 0~15 分钟,别掐着秒表醒
+# 同一对话同一轮扫描只触发一个 ping,其余顺延错峰(0.6.0 实测发现:承诺催与她
+# 自发的 set_timer 同 tick 双发,两条主动消息同一秒连珠炮,读起来像机器)。
+SAME_CHAT_SPACING_MS = 3 * 60_000
 
 
 class TimerService:
@@ -58,6 +61,7 @@ class TimerService:
                 return
             # 认领:先置 firing 并提交,进程内轮询不会重复拿到;睡着的顺延保持 pending
             claimed = []
+            claimed_chats: set = set()
             items_cache: dict = {}
             now_dt = clock.now_dt()
             for ping in due:
@@ -72,7 +76,13 @@ class TimerService:
                             ping.due_ms = wake + random.randint(0, SLEEP_DEFER_JITTER_MS)
                             logger.info("timer deferred past sleep (chat %s)", ping.chat_id)
                             continue
+                # 错峰:同一对话本轮已有一个 ping 在触发 → 其余顺延,不同一秒双发
+                if ping.chat_id in claimed_chats:
+                    ping.due_ms = now_ms() + SAME_CHAT_SPACING_MS
+                    logger.info("timer spaced out (chat %s): %s", ping.chat_id, ping.topic[:30])
+                    continue
                 ping.status = "firing"
+                claimed_chats.add(ping.chat_id)
                 claimed.append((ping.id, ping.chat_id, ping.topic, ping.due_ms))
             await session.commit()
 
@@ -80,6 +90,7 @@ class TimerService:
             await self._fire(ping_id, chat_id, topic, due_at)
 
     async def _fire(self, ping_id, chat_id, topic: str, due_ms: int) -> None:
+        from app.affect.state import AffectState
         from app.conversation import pipeline
         from app.conversation.bus import event_bus
         from app.db import SessionLocal
@@ -93,7 +104,22 @@ class TimerService:
                         ping.status = "failed"
                         await session.commit()
                     return
-                payload = await pipeline.handle_timer_fire(session, chat, topic, due_ms)
+
+                # 承诺催(v0.6):触发前查回路是否还挂着。他已兑现(回路被
+                # addresses_loop_id 关闭)→ 静默完成,绝不空催"你说好的X呢"。
+                kind = getattr(ping, "kind", "timer") if ping else "timer"
+                if kind == "commitment" and ping and ping.loop_id:
+                    state = AffectState.from_dict(chat.affect) if chat.affect else None
+                    if state is None or state.find_loop(ping.loop_id) is None:
+                        ping.status = "fired"
+                        await session.commit()
+                        logger.info("commitment ping resolved silently (chat %s): %s",
+                                    chat_id, topic[:40])
+                        return
+
+                payload = await pipeline.handle_timer_fire(
+                    session, chat, topic, due_ms, kind=kind,
+                )
                 if ping:
                     ping.status = "fired"
                 await session.commit()

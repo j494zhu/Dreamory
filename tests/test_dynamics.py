@@ -73,13 +73,16 @@ def test_anxious_persona_loses_security_faster():
 
 
 def test_loop_escalates_to_grievance_across_sessions():
+    """非承诺类回路保持旧语义:熬过一个会话即沉旧账。
+    (承诺类 0.6.0 起走到期时刻判定——"周六打电话"周二变旧账是 bug 不是特性,
+    见 tests/test_commitment.py。)"""
     p, s = Persona(), AffectState.fresh(Persona())
-    s.open_loops.append(OpenLoop.new("commitment", "他承诺:周末打电话", 1, weight=3))
+    s.open_loops.append(OpenLoop.new("unanswered_bid", "她说压力大,他只回了'哦'", 1, weight=3))
     s.last_ts -= 8 * 3600
     dynamics.apply_time(s, p)
     assert len(s.open_loops) == 0
     assert len(s.grievances) == 1
-    assert "周末打电话" in s.grievances[0].content
+    assert "压力大" in s.grievances[0].content
 
 
 def test_avoidant_withdraws_instead_of_fighting():

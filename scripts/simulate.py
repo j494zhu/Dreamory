@@ -159,6 +159,12 @@ async def run(args: argparse.Namespace) -> None:
                 msg = await _llm_user_message(transcript, st.get("style", "自然日常"))
                 await say(msg)
                 clock.advance(float(st.get("gap_minutes", 20)) * 60)
+        elif st.get("tick_timers"):
+            # 手动跑一轮定时器扫描:处理到点的 ping(含 v0.6 承诺催)。
+            # sim 进程里 TimerService 后台循环不跑,这一步就是它的手动挡。
+            from app.conversation.timer import timer_service
+            await timer_service._tick()
+            print(f"  ⏰ {clock.now_dt():%m-%d %H:%M} tick_timers 执行完毕")
         elif "say" in st:
             await say(st["say"])
         else:

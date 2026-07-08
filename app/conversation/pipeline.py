@@ -245,10 +245,12 @@ def _schedule_auto_dream() -> None:
 
 
 async def _pending_timer_count(session: AsyncSession, chat_id) -> int:
+    # 只数她自己约的闹钟(kind=timer):承诺催的 ping 不占 set_timer 配额
     return (
         await session.scalar(
             select(func.count()).select_from(TimerPing).where(
-                TimerPing.chat_id == chat_id, TimerPing.status == "pending"
+                TimerPing.chat_id == chat_id, TimerPing.status == "pending",
+                TimerPing.kind == "timer",
             )
         )
     ) or 0
@@ -377,7 +379,11 @@ async def handle_message(
     ctx = _recent_context(recent) # context, 给消息加上 他/她 人称
 
     # 2. event extraction (LLM①) --------------------------------------------
-    events = await extractor.extract(her_last, user_content, ctx, state)
+    now_dt = clock.now_dt()
+    events = await extractor.extract(
+        her_last, user_content, ctx, state,
+        now_str=f"{now_dt.year}年{now_dt.month}月{now_dt.day}日 周{_WEEKDAYS[now_dt.weekday()]} {now_dt:%H:%M}",
+    )
 
     # 3. dynamics (pure code) -----------------------------------------------
     trace = dynamics.apply_events(state, events, persona, her_last, user_content)
@@ -390,6 +396,19 @@ async def handle_message(
         surface = await life_sim.recent_event_texts(session, chat.id)
     if narrative.refresh(state, persona, surface_candidates=surface):
         trace.append(f"自我解释口径: {state.self_narrative or '(翻篇,清空)'}")
+
+    # 3.6 承诺到点催(v0.6):有明确到期时刻的新承诺 → 挂一个 kind=commitment 的
+    #     ping。触发前会查回路是否还挂着——他兑现了就静默作废,绝不空催。
+    commitment_ping = None
+    new_commit_loop = events.get("_commitment_loop")
+    if (new_commit_loop is not None and new_commit_loop.due_ms
+            and settings.commitment_ping_enabled and settings.timer_enabled):
+        session.add(TimerPing(
+            chat_id=chat.id, kind="commitment", loop_id=new_commit_loop.id,
+            due_ms=new_commit_loop.due_ms + settings.commitment_ping_delay_min * 60_000,
+            topic=new_commit_loop.content,
+        ))
+        commitment_ping = {"loop_id": new_commit_loop.id, "due_ms": new_commit_loop.due_ms}
 
     # 4. persist his message to L3 + hot-path tagging ------------------------
     user_mem = await l3_store.write_memory(
@@ -554,6 +573,7 @@ async def handle_message(
             "timer_scheduled": timer_scheduled,
             "dull_streak": state.dull_streak,
             "self_narrative": state.self_narrative or None,
+            "commitment_ping": commitment_ping,
             "topic_seed": topic_seed or None,
             "schedule": schedule_block or None,
             "tools": tool_trace,
@@ -583,12 +603,25 @@ _PROACTIVE_TMPL = (
     "但要让他感觉到:你记得你答应过的事。"
 )
 
+# 承诺到点没兑现的"催"(v0.6):她惦记的不是闹钟,是他说过的话。
+_COMMITMENT_TMPL = (
+    "他之前答应过你:『{topic}』。现在说好的时间已经到了/过了,"
+    "他一直没兑现,也没再提这件事。\n"
+    "这条消息是【你主动发起】的——他并没有发新消息。怎么开口完全按你的性格和"
+    "此刻的心情来:可以委屈地小声提醒,可以阴阳怪气地试探(装作随口一问),"
+    "可以直接问,也可以什么都不点破、只发一句没头没尾的话等他自己反应过来。\n"
+    "不要机械地复述承诺原文,不要像闹钟播报,更不要一上来就兴师问罪——"
+    "你此刻更多是惦记和一点点失落,气不气要看他接下来怎么接。"
+)
+
 
 async def handle_timer_fire(
-    session: AsyncSession, chat: Chat, topic: str, due_ms: int
+    session: AsyncSession, chat: Chat, topic: str, due_ms: int,
+    kind: str = "timer",
 ) -> dict:
     """定时器到点的隐藏调用。没有他的新消息 → 不跑抽取/事件动力学,
     只做:时间效应 → L1 组装 → 生成(带主动情境)→ 落库 → 存状态。
+    kind="commitment" 时用"催承诺"情境(他答应的事到点没兑现)。
     不提交(调用方把 ping 状态和消息放进同一个事务),返回 SSE 载荷。"""
     persona = Persona.from_dict(chat.persona) if chat.persona else PRESETS["anxious"]
     state = AffectState.from_dict(chat.affect) if chat.affect else AffectState.fresh(persona)
@@ -637,11 +670,12 @@ async def handle_timer_fire(
     if settings.notes_enabled:
         notebook_block = await notebook.render_block(session, chat.id)
 
+    proactive_tmpl = _COMMITMENT_TMPL if kind == "commitment" else _PROACTIVE_TMPL
     system_prompt = injector.render(
         state, persona, core_identity=core_identity,
         memory_block=memory_block, goal=chat.goal,
         time_context=_time_context(prev_ts),
-        proactive=_PROACTIVE_TMPL.format(topic=topic or "(她只说了等会儿来找他)"),
+        proactive=proactive_tmpl.format(topic=topic or "(她只说了等会儿来找他)"),
         allow_timer=False,   # 主动消息里不许再约闹钟,防止连环自触发
         schedule_block=schedule_block, topic_seed=topic_seed,
         allow_tools=settings.tools_enabled,

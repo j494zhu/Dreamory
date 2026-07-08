@@ -134,7 +134,13 @@ async def compute_health(session: AsyncSession, chat: Chat) -> dict:
             for t in (tags or []):
                 tag_counts[t] = tag_counts.get(t, 0) + 1
         dominant = max(tag_counts.values()) / len(rows) if tag_counts else None
-        check("tag_monoculture", dominant, DOMINANT_TAG_MAX)
+        metrics["tag_monoculture"] = None if dominant is None else round(dominant, 3)
+        # 冷启动豁免(0.5.0 实测教训):种子词表刚建、tag 还没长开时,单 tag 天然
+        # 占大头——记忆够多且词表成型(≥3个tag)后,垄断才是真问题。
+        mature = len(rows) >= 30 and len(tag_counts) >= 3
+        if dominant is not None and mature and dominant > DOMINANT_TAG_MAX:
+            flags.append({"key": "tag_monoculture", "label": LABELS["tag_monoculture"],
+                          "value": round(dominant, 3), "threshold": DOMINANT_TAG_MAX})
     else:
         metrics["tagging_backlog"] = metrics["tag_monoculture"] = None
 

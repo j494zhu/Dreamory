@@ -8,7 +8,9 @@
 """
 import random
 
-from .state import AffectState
+from app import clock
+
+from .state import AffectState, OpenLoop
 from .persona import Persona
 
 # 口癖低频触发概率:不再每轮常驻,只在心情不错时偶尔冒出来才自然。
@@ -92,15 +94,47 @@ _TIER_FRAMES = {
 }
 
 
+def _due_phrase(due_ms: int | None) -> str:
+    """承诺到期状态 → 人话(她对'说好的时间'的体感)。"""
+    if not due_ms:
+        return ""
+    delta_h = (due_ms - clock.now_ms()) / 3600_000
+    if delta_h >= 0:
+        if delta_h < 2:
+            return "(马上就到他说的时间了)"
+        if delta_h < 30:
+            return f"(约{int(round(delta_h))}小时后到点)"
+        return f"({int(delta_h // 24)}天后到点)"
+    over_h = -delta_h
+    if over_h < 24:
+        return f"(已经过点{max(1, int(over_h))}小时了,他没动静)"
+    return f"(已经过点{int(over_h // 24)}天了,他没动静)"
+
+
+def _commitment_pressing(loop: OpenLoop) -> bool:
+    """承诺是否临期(2小时内)或已过点——需要她'心里惦记着'。"""
+    return (loop.type == "commitment" and loop.due_ms is not None
+            and loop.due_ms - clock.now_ms() < 2 * 3600_000)
+
+
 def _render_memory(state: AffectState) -> str:
     """关系记忆块:整个注入里信息密度最高的部分。"""
     parts = []
     if state.open_loops:
         items = "\n".join(
-            f"  - {l.content}" + (f"(隔了{l.sessions_old}次聊天还没下文)" if l.sessions_old else "")
+            f"  - {l.content}"
+            + (f"(隔了{l.sessions_old}次聊天还没下文)" if l.sessions_old else "")
+            + (_due_phrase(l.due_ms) if l.type == "commitment" else "")
             for l in sorted(state.open_loops, key=lambda x: -x.weight)
         )
         parts.append(f"你心里挂着的事(他还没回应/没兑现):\n{items}")
+        # 临期/过期的承诺:她惦记着"说好的时间"(提不提、怎么提,交给性格和心情)
+        if any(_commitment_pressing(l) for l in state.open_loops):
+            parts.append(
+                "※ 他答应过的事快到点了/已经过点了——你心里一直惦记着。"
+                "到点了他没动静,提不提、怎么提(委屈/试探/直说/憋着),"
+                "按你的性格和此刻的心情来,但你不可能完全当没这回事。"
+            )
     active_grievances = [g for g in state.grievances if not g.resolved]
     if active_grievances:
         items = "\n".join(f"  - {g.content}" for g in active_grievances)

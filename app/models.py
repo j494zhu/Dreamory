@@ -194,6 +194,10 @@ class TimerPing(Base):
     # pending -> firing -> fired | failed
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     created_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+    # v0.6 承诺兑现闭环:kind=commitment 的 ping 是"到点催"——触发前先查
+    # 对应 open_loop 是否还挂着(loop_id),已兑现就静默完成,绝不空催。
+    kind: Mapped[str] = mapped_column(String(16), default="timer")   # timer | commitment
+    loop_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 # ──────────────────────────────────────────────────────────────────

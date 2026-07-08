@@ -48,11 +48,15 @@ class OpenLoop:
     created_turn: int
     weight: int = 1    # 重要程度 1~5,决定沉淀为旧账时的杀伤力
     sessions_old: int = 0
+    # 承诺专用(v0.6):到期时刻。有明确时间的承诺("周六打电话")在过点+宽限后
+    # 才算爽约;含糊承诺("下次带你去")为 None,熬过多个会话才沉旧账。
+    due_ms: int | None = None
 
     @staticmethod
-    def new(type: str, content: str, turn: int, weight: int = 1) -> "OpenLoop":
+    def new(type: str, content: str, turn: int, weight: int = 1,
+            due_ms: int | None = None) -> "OpenLoop":
         return OpenLoop(id=uuid.uuid4().hex[:8], type=type, content=content,
-                        created_turn=turn, weight=weight)
+                        created_turn=turn, weight=weight, due_ms=due_ms)
 
 
 @dataclass

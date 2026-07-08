@@ -61,3 +61,12 @@ async def init_db() -> None:
             text("ALTER TABLE chats ADD COLUMN IF NOT EXISTS "
                  "last_night_run_ms BIGINT NOT NULL DEFAULT 0")
         )
+        # 0.6.0 升级:承诺兑现闭环的"到点催" ping
+        await conn.execute(
+            text("ALTER TABLE timer_pings ADD COLUMN IF NOT EXISTS "
+                 "kind VARCHAR(16) NOT NULL DEFAULT 'timer'")
+        )
+        await conn.execute(
+            text("ALTER TABLE timer_pings ADD COLUMN IF NOT EXISTS "
+                 "loop_id VARCHAR(16)")
+        )

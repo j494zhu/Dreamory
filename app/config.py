@@ -101,6 +101,11 @@ class Settings(BaseSettings):
     # ── Persona evolution(好感度里程碑解锁的人格演化)──────────────
     persona_evolution_enabled: bool = Field(True, alias="PERSONA_EVOLUTION_ENABLED")
 
+    # ── Commitment(承诺兑现闭环:到点没兑现她会主动催)─────────────
+    commitment_ping_enabled: bool = Field(True, alias="COMMITMENT_PING_ENABLED")
+    # 过点多少分钟后催(到期估算本就粗,别掐着秒催)
+    commitment_ping_delay_min: int = Field(30, alias="COMMITMENT_PING_DELAY_MIN")
+
     # ── Dream ─────────────────────────────────────────────────────
     # Auto-dream is ON: after a turn commits, the pipeline fires should_dream()
     # and, if the pending backlog is high enough, runs a Dream cycle in the

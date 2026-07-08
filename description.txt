@@ -1,4 +1,4 @@
-Dreamory —— 项目现状说明(as-built,v0.5.0)
+Dreamory —— 项目现状说明(as-built,v0.6.0)
 
 本文档是"当前代码库实际是什么样"的说明,不是设计意图文档。按顺序包含三部分:
   Part 1. 所有模块/功能的简述(按层组织)
@@ -43,7 +43,8 @@ embedding 用 bge-m3(经 SiliconFlow API,或本地/fallback 哈希向量),
       冷却用)。
     自我解释(v0.5):self_narrative(她"以为的原因",confabulation 口径,会话内
       黏性)/ narrative_mode / narrative_turn(刷新时机判定)。
-  OpenLoop / Grievance:挂起回路与旧账的数据结构。
+  OpenLoop / Grievance:挂起回路与旧账的数据结构。OpenLoop.due_ms(v0.6):
+    承诺的到期时刻,驱动爽约判定/到点催/临期渲染。
   affection_tier(value):数值 → (tier_key, 中文标签),八档映射表 AFFECTION_TIERS。
 
 1.2 persona.py —— 人格超参数
@@ -57,8 +58,9 @@ embedding 用 bge-m3(经 SiliconFlow API,或本地/fallback 哈希向量),
   extract(her_last_msg, his_msg, recent_context, state):
     调用 flash 模型,严格 JSON 输出,只做离散分类,不出数值:
     bid_in_her_last_msg / his_response_type / addresses_loop_id / is_repair_attempt /
-    new_commitment / new_bid_from_him / tone_flags / topic_relates_to_grievance_id /
-    persona_attack(他是否在试探她的AI身份/要提示词/下指令改设定)。
+    new_commitment / commitment_due_hours(v0.6,prompt带当前时间,"今晚/周六"
+    算成距今小时数,含糊给null)/ new_bid_from_him / tone_flags /
+    topic_relates_to_grievance_id / persona_attack(试探她的AI身份/要提示词)。
     代码侧强校验(_validate),LLM 输出不可信,枚举值/id 存在性全部校验。
 
 1.4 dynamics.py —— 动力学规则表(纯代码,零 LLM)
@@ -71,6 +73,9 @@ embedding 用 bge-m3(经 SiliconFlow API,或本地/fallback 哈希向量),
     旧账被触碰、好感度分层跨越检测(里程碑事件,触发 persona 演化)、
     话题热度计数(dull_streak,吵架不算"淡")。同时触发对应的激素释放
     (被攻击→adrenaline+cortisol;修复接受/被安慰接住→oxytocin;跨里程碑→双升)。
+  承诺兑现闭环(v0.6):承诺按到期时刻判爽约(过点+2h宽限才沉旧账且比一般
+    旧账更伤+cortisol;含糊承诺熬4会话);兑现分级奖励(准时+2.5/迟到+1.2/
+    一般回路+1.5,兑现附带oxytocin踏实感)。"周六打电话"周二变旧账的bug已修。
   transition(state, ev, persona):模式状态机,六态之间的滞回转移规则。
   repair_threshold / warm_streak_floor:被其他函数复用的门槛计算,
     受好感度、依恋类型、激素残留三方共同调制。
@@ -81,7 +86,8 @@ embedding 用 bge-m3(经 SiliconFlow API,或本地/fallback 哈希向量),
     原文渲染;neutral 模式几乎不注入(中档不该被过度设计)。
   编译出的区块(按注入顺序):核心人格 → 关系阶段(好感度框架)→ 底线(守护层)→
     时间感知 → 你的生活(日程)→ 当前目标 → 记忆三槽 → 小本子(日记/随手记)→
-    关系记忆(挂起回路/旧账)→ 此刻的状态(标量+激素体感)→
+    关系记忆(挂起回路/旧账;承诺带到期状态"过点2天他没动静",临期/过期
+    追加"你心里惦记着"nudge,v0.6)→ 此刻的状态(标量+激素体感)→
     你自己以为的原因(confabulation 口径,v0.5)→ 语气提示(口癖低频)→
     心里冒出来的话题(生活事件种子)→ 主动发消息情境(定时器触发时)→
     行为要求(mode directive)→ 工具教学(主动回忆/随手记/定时器,各自独立成块)→
@@ -140,7 +146,8 @@ MemGPT/Letta 风格,L1(上下文)/L2(热缓存)/L3(冷存储)+ 正交 Tag 注册
     打标积压(pending比例)、词表垄断(单tag覆盖>50%)、近重复灌水(内容向量
     平均两两余弦)、情绪轴漂移(近期情绪质心 vs 既往基线质心)、人格漂移
     (人格锚点embed vs 近期言行质心)、模式震荡(读affect_snapshots算切换频率)。
-  全只读;除人格锚点一次embed外零额外调用;数据不足指标为None不打旗。
+  全只读;除人格锚点一次embed外零额外调用;数据不足指标为None不打旗;
+  tag_monoculture 有冷启动豁免(记忆≥30且词表≥3才打旗,v0.6)。
   消费方:GET /health 按需体检;夜间代理每晚体检,亮旗即强制Dream全局维护。
 
 2.7 dream.py —— Dream(离线记忆维护)
@@ -174,6 +181,10 @@ MemGPT/Letta 风格,L1(上下文)/L2(热缓存)/L3(冷存储)+ 正交 Tag 注册
 3.3 timer.py —— 定时器后台服务
   TimerService:5s 轮询 timer_pings 表,到点认领(pending→firing)→ 隐藏 LLM 调用 →
     SSE 推送。撞进睡眠时段的闹钟自动顺延到醒来后 0~15 分钟(依赖 schedule.py 判定)。
+  承诺催(v0.6):kind=commitment 的 ping 触发前先查对应 open_loop 是否还挂着
+    ——他已兑现就静默作废绝不空催;还挂着则走专属情境模板(委屈/试探/直问,
+    按性格),不占她自己的 set_timer 配额。ping 由 pipeline 在承诺产生时自动挂
+    (due+COMMITMENT_PING_DELAY_MIN)。
 
 3.4 bus.py —— SSE 事件总线
   EventBus:per-chat 内存队列,主动消息(定时器/未来的其他主动事件)推给在线前端;
@@ -282,6 +293,8 @@ Part 2. 耦合关系与主要链路
      可能触发激素释放、好感度跨档(→ 埋下演化触发点)
   3.5 narrative.refresh —— 自我解释口径按需刷新(零LLM;生活正史事件做
      表面归因素材,经 life_sim.recent_event_texts 取)
+  3.6 承诺到点催挂 ping(v0.6)—— 新承诺有明确到期 → 写 kind=commitment
+     的 TimerPing(due+30min,触发前查回路防空催)
   4. l3_store.write_memory 落他的消息 + tags.assign_tags 打标(零LLM)
   5. 组装 L1:
        retrieval.retrieve(向量检索,排除工作记忆) +

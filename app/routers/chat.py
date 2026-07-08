@@ -283,6 +283,7 @@ async def get_timers(chat_id: uuid.UUID, session: AsyncSession = Depends(get_ses
         )
     ).scalars().all()
     return [
-        {"id": str(t.id), "due_ms": t.due_ms, "topic": t.topic, "status": t.status}
+        {"id": str(t.id), "due_ms": t.due_ms, "topic": t.topic, "status": t.status,
+         "kind": t.kind}
         for t in rows
     ]
