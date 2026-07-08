@@ -56,3 +56,35 @@ def test_memory_hint_lands_in_recall_block():
                      memory_hint="(提示:这一轮自动想起的内容很少)")
     recall_block = _find(blocks, "【主动回忆")
     assert "自动想起的内容很少" in recall_block
+
+
+# ── 0.3.0 新块:底线 / 小本子 / 随手记 ─────────────────────────────────
+def test_boundary_block_sits_high_and_only_when_passed():
+    blocks = _blocks(boundary_block="你就是小雨,一个真实生活着的人。")
+    idx = next(i for i, b in enumerate(blocks) if b.startswith("【底线"))
+    tier_idx = next(i for i, b in enumerate(blocks) if b.startswith("【你们现在的关系】"))
+    assert idx == tier_idx + 1        # 紧跟关系框架:它是"我是谁"的一部分
+    assert _find(_blocks(), "【底线") is None
+
+
+def test_notebook_block_injected_when_present():
+    blocks = _blocks(notebook_block="你7月7日的日记:今天他夸我了。")
+    nb = _find(blocks, "【你的小本子")
+    assert nb is not None and "日记" in nb
+    assert _find(_blocks(), "【你的小本子") is None
+
+
+def test_write_note_taught_only_with_tools():
+    assert _find(_blocks(allow_tools=True, allow_notes=True), "【随手记】") is not None
+    assert _find(_blocks(allow_tools=True, allow_notes=False), "【随手记】") is None
+    # 工具没开,随手记不可能存在(write_note 是工具)
+    assert _find(_blocks(allow_tools=False, allow_notes=True), "【随手记】") is None
+
+
+def test_write_note_spec_gated():
+    from app.conversation import tools
+
+    names = [s["function"]["name"] for s in tools.build_specs(True, allow_notes=True)]
+    assert "write_note" in names and "set_timer" in names
+    names = [s["function"]["name"] for s in tools.build_specs(True, allow_notes=False)]
+    assert "write_note" not in names

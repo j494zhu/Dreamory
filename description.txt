@@ -1,237 +1,359 @@
-Part 1. 项目综合描述
-现在的目标是构建一个伴侣app. 核心卖点是基于参数的情绪感知, 以及层级记忆库. 
-层级记忆库非常类似于 Memgpt(Letta)
-构建一个三级分层记忆系统,让对话 Agent 在有限上下文窗口下实现近乎无限、可持续的长期记忆。
-每次处理一段对话,系统会产生三类原始数据:
-文本消息本体(用户说的 / Agent 说的)
-Agent 生成该消息时的 reasoning(思考链)
-Agent 生成该消息时的情绪状态
-记忆按访问速度/容量分三层:
-L1 = 上下文窗口(快、小、当前在用)
-L2 = Hot Zone 热缓冲(中、只读、常用记忆)
-L3 = 全量冷存储(慢、无限、唯一真相源)
-外加一个横跨 L3 的 Tag 注册表(不属于任何一层,是正交的索引结构)。
-项目的后端使用fastapi, 前端使用html/css
-项目的模型使用deepseek v4 pro以及deepseek v4 flash, embedding 模型使用 bge-m3, 关系表使用postgres
-向量只编码纯内容:进入任何向量库的、被 embedding 的文本,只能是内容本身。tags、时间戳、说话人等元数据一律不拼进被嵌入的文本——它们会平移/污染向量,破坏余弦相似度的区分度。
-这些元数据作为旁挂列,在检索时当 WHERE 过滤条件用。
-LLM 只做"命名",不做"开放式打标签":热路径打 tag 全程零 LLM(确定性的向量匹配)。LLM 只在离线 Dream 阶段被调用,且只负责"给一个已经成形的聚类簇起名字"这一件它擅长的事。
-派生数据可缓存,但必须可丢弃且单向派生:Hot Zone、物化视图等都是从 L3 派生的只读缓存,丢了能重建,绝不反向成为真相
+Dreamory —— 项目现状说明(as-built,v0.3.0)
+
+本文档是"当前代码库实际是什么样"的说明,不是设计意图文档。按顺序包含三部分:
+  Part 1. 所有模块/功能的简述(按层组织)
+  Part 2. 模块之间的耦合关系与主要链路
+  Part 3. 功能 → 文件对照表
 
 
-Part 2. 项目结构描述
-2.1. 情感参数集
-我过去使用llm的时候观察到了一些痛点. llm本身是无状态的, 对于情绪没有直接的感知能力, 只能通过上下文去猜测. 故而尝试设计一个基于llm的伴侣模型的时候, 会出现很多不真实感. 
-例如llm一直都是状态非常饱满的, 好像用户就算做了一件错误的事情, 说一句好话, llm马上就可以完全恢复状态. 
-以及如果记录和llm进行的伴侣对话实验, 发现llm似乎每一条回复的长度都基本上一致. 
-诸如此类还有很多. 我的结论是, 直接通过llm对话, 或者设计system prompt, 无法让llm在情感上表现的和人类类似. 
-我认为人在对话交流的时候, 大脑内其实维护了一个类似状态机的隐藏参数集, 而这个参数集会影响实际的对话. 例如, 兴趣程度, 疲劳度, 唤起度等等. 
-基于以上想法, 我现在准备在项目中采用以 Emotion Bids 和 Attachment Theory 理论为核心的情绪状态机来完成情绪模拟. 
-部分代码派那段已经放在 /files 文件夹里了. 请使用这部分代码, 允许修改, 改编, 来构建情感模块
-代码的核心思路为通过persona以及维护参数集的机制, 将参数代表的含义注入进prompt中. 
-代码中会利用到llm的reasoning功能, 我称之为脑内剧场. 来强化实际对话中的情感真实和准确程度. 
+================================================================================
+Part 1. 模块与功能简述
+================================================================================
 
-2.2. 记忆库
-记忆库的设计基于这一条理论: 显存是昂贵的, 内存是便宜的, 存储是免费的. 
-所以我们可以将大量数据保存在硬盘中, 但是对于上下文需要进行精打细选. 
-接下来描述数据库的结构. 
-数据库分成三层, L1/L2/L3. 接下来分别讲解每一层的结构. 
-L1 为非常重要的内容, 每次都会直接加载进对话. 
-L1 包含以下板块: [核心人格, 记忆-刻骨铭心, 记忆-工作记忆, 记忆-L3检索, 当前目标, 当前参数情绪, 挂起回路]
-核心人格指的是给llm设定的固有认知. 代表一个人思想中非常顽固的部分. 例如对于自我的元认知, 性别名字, 生日, 长期习惯等等. 这其中内容不是说完全一成不变, 但是需要保持一个非常强大的, 不容易被改变的惯性. 
-有些内容需要特殊机制来改变, 例如年龄; 有些内容可以改变, 但是需要非常强大的理由. 例如爱好; 需要在对话中有足够的修改动力. 
-在当前阶段, 先不需要考虑核心人格的改变, 暂且将其固化. 
-记忆-刻骨铭心代表一些非常重要的记忆, 例如特别幸福的, 特别痛苦的, 这类造成了强烈的情绪波动的内容. 
-在当前阶段, 假设这部分内容是不需要删除的. 
-记忆-显存工作记忆代表最近的若干条对话记录, 也就是传统的messages数组的最后几条. 这里可以做一个预设, 例如k=10. 采用FIFO策略. 
-记忆-L3检索代表从L3数据库中搜索出来的和当前对话相关的内容. 
-当前情绪参数, OpenLoop等对应情感参数集的部分. 将其一起保存至L1
+0. 项目定位
+--------------------------------------------------------------------------------
+情绪感知 + 层级记忆的伴侣 App。后端 FastAPI,前端原生 HTML/CSS/JS,
+LLM 用 DeepSeek v4 pro(生成/夜间反思/Dream命名)+ v4 flash(事件抽取,便宜确定性),
+embedding 用 bge-m3(经 SiliconFlow API,或本地/fallback 哈希向量),
+关系表 + 向量库统一用 PostgreSQL + pgvector。
 
-L2为热点层, 代表L3中高频使用出现的记忆. L2只保存id, 不保存文本消息, 这是为了保证数据一致性. id是文本在L3中的id
-进入条件:时间衰减热度(time-decayed heat)——每次命中加分,分数随时间指数衰减。
-不用裸 frequency,否则"陈年顶流"会赖着不走、挤占缓冲。
-检索命中时,只在内存计数器里累加(hit_buffer[id] += 1、last_used_buffer[id] = now),不碰数据库。
-后台攒批 flush:每隔 N 秒或攒够 M 条,一次批量 UPDATE 回主表。
-容忍几秒延迟(热度是统计量,不是账本)。
-
-淘汰策略:固定容量上限,满则按热度分数淘汰。直接采用成熟缓存算法:W-TinyLFU 或 LRU-K,不自造。
-L3为原始数据层, 冷储存, 唯一数据源. 
-主表(关系型) + VectorDB_1(内容) + VectorDB_2(情绪)
-sql关系表的字段有: 
-id: primary_key=uuid7, 身份 + 粗时间排序(字典序≈时间序), 
-timestamp 整数/datetime,建 B-tree 索引, 精确时间查询用。区间查询、邻近查询都走此列,不解析 UUID
-content, text文本消息本体,全库唯一一份
-speaker enumuser / agent
-emotion_reasoning text/json情绪 + reasoning 原文
-tags array/json,旁挂元数据,检索时做过滤;不进向量
-last_used 整数/datetime热度字段,后台批量回写
-use_count整数热度字段,后台批量回写
-必备索引:timestamp(区间/邻近查询)、use_count 或热度分数(取热记忆)、tags 的 GIN/倒排(标签过滤)。
-向量数据库分别保存: 
-VectorDB_1: (内容向量, id) —— 内容语义检索轴
-VectorDB_2: (情绪/reasoning 向量, id) —— 情绪/心境检索轴
-
-除了 L1/L2/L3, 数据库还包含 Tags 注册表(横跨 L3 的正交索引)
-内容:受控词表(所有规范 tag)+ 每个 tag 的 centroid 原型向量(= 该 tag 名下所有成员记忆向量的质心)。
-角色: 被编译进 L1 上下文(让 Agent 知道当前存在哪些 tag → 倾向复用、抑制发散);
-被热路径用于打标签匹配;
-注意:它不是一档"内存层",不进 L1/L2/L3 容量层级,是正交元数据结构。
-被 Dream机制 维护(新建/合并/拆分/重映射)。
-(尚不完全确定) Tag 组织建议:
-按 facet(维度)而非自由标签。 预设若干正交维度(如 {领域, 实体, 类型, 项目, 时间桶}),
-每条记忆在每个相关维度上取值。维度本身 3~6 个,天然框住 tag 数量,也让每个 facet 成为受控小词表(自动消解 replicant/replicants 这类问题)。
-打 Tag(热路径,零 LLM)
-
-原则:为检索打标签,不为描述打标签。 唯一职责是检索时把候选集切小;内容本身 + 向量已经"描述"了记忆。判断要不要打某 tag,只问:将来会不会用它来过滤? 不会就不打。
-
-算法:kNN 标签传播 + 投票阈值(或 centroid 匹配)
-
-给新消息打 tag:
-  1. 用其内容向量在 VectorDB_1 找 top-k 邻居(或直接对各 tag 的 centroid 算相似度)
-  2. 统计邻居携带的 tag,按相似度加权投票
-  3. 仅当某 tag 的加权票数 ≥ 阈值 → 打上(过滤掉单个邻居的偶发噪声 tag)
-  4. 若没有任何 tag 达到阈值(落在向量空间稀疏/未占领区)→ 标记为 pending,不打 tag
-近义词、非字面 tag 自动解决:由 embedding 兜底("android" 向量近 "replicant";描述背叛但没出现"背叛"二字,向量仍近 betrayal)。这些是"意义轴"问题,归 embedding,不归 tag。
-颗粒度/数量准则:
-每条 2~5 个 tag 是甜区;>7 个基本是在用 tag 干 embedding 的活。
-判别力检验:某 tag 出现在 >50% 记忆上 → 无区分度,删或拆维度;只出现在 1 条上 → 太细,是噪声(那条靠向量本就能搜到)。
-打标签粒度:给蒸馏后的事实条目/passage 打 tag,不给原始消息流逐条打(贵且必然发散)。原始流靠纯文本/向量检索。
-新 Tag 创建与整理(Dream / 离线)
-热路径永远不创建新 tag,只分配已有 tag。新 tag 与词表维护全在离线 Dream 阶段。这把 LLM 关进"只命名"的小笼子,绕开"LLM 开放打标签不靠谱"的问题。
-触发条件(信号驱动,不绑死"用户睡觉"):
-tag 总数超阈值 / 词表熵升高 / 检测到空闲 / pending 堆积超阈值。
-"睡觉/空闲"只是其中一种空闲信号。
-
-Dream流程为记忆库维护. 
-1. 聚类:把 pending 记忆 + 可疑区域的记忆做向量聚类
-2. 命名:当某簇足够大且紧致 → 交 LLM 给该簇命名(LLM 唯一职责)
-3. 合并:相似 tag 合并(如 androids → replicant)
-4. 拆分:某 tag 成员在向量空间明显分成多坨 → 拆分(如 work → work-项目A / work-项目B)
-5. 重映射:改写所有受影响记忆的 tag,并保留一张【旧tag → 规范tag】映射表
-          (让老查询/老过滤器仍可翻译)
-6. 更新:刷新受控词表 + 各 tag 的 centroid 原型向量
-Dream 的设计约束:
-黏性(stickiness):强烈偏向保留现有规范 tag,只在信号很强时才合并/拆分,避免 tag 身份每晚横跳(ml ↔ machine-learning)导致下游崩溃。
-既合并也拆分:重复→合并,过度合并/碎片化→拆分。判据是"成员是否形成清晰子簇"。
-重映射是主要工作量:不只改词表,要改写存量记忆并维护旧→新映射表。
-Dream在对话中一般不进行, 仅仅在用户睡觉以后后台运行. 
-Dream功能先做好, 但是暂时不开启. 
-
-2.3 检索
-检索流程:
-  query
-   → VectorDB_1(按内容)和/或 VectorDB_2(按情绪)语义召回 → 返回一批 id
-   → 回主表取全字段(建议为 pgvector 内的 JOIN)
-   → tags 作为 WHERE 过滤(向量=模糊意义轴,tag=硬类别轴,二者互补)
-   → 命中记录热度(写内存计数器,见 L2)
-   → 去重后填充 L1 对应记忆槽
-双轴检索:可独立"按内容搜"或"按情绪搜"(如"找我感到被背叛的记忆"走 VectorDB_2),互不污染。
-多步检索(可选增强):仿 MemGPT 的 function chaining,允许 Agent "搜一次→不满意→换词再搜"迭代。
-条件偏置:用 L1 的 当前目标 给召回加权。
-
-2.4 热度与缓存
-热度 = 时间衰减分数(命中 +w,随时间指数衰减),而非裸 frequency。
-命中只写内存计数器;后台攒批回写 L3。
-L2 进出由热度分数 + 缓存淘汰算法(W-TinyLFU / LRU-K)决定。
-
-2.5 其他策略
-问题:同一条记忆可能既在 L2(因热)、又被当次检索从 L3 捞回,在 L1 重复占位。
-推荐默认:组装 L1 时按 id 全局去重;优先级 刻骨铭心 > L2热 > 当次检索,同一 id 只保留最高优先级的那次,其余排除。
-问题:刻骨铭心 / 工作记忆 / L3检索来的 三槽各占多少 token,溢出谁先被挤(MemGPT 队列管理问题)。
-推荐默认(占 L1 记忆区总预算的比例,可调):
-
-刻骨铭心:20%(几乎不驱逐,FIFO 仅在极端情况)
-工作记忆/近期:50%(FIFO,最旧先出,出场前可触发摘要 summarization)
-L3 检索来的:30%(按相关度排序,低分先丢)
-溢出时:先压缩"工作记忆"为摘要,再驱逐"L3检索来的"低分项,最后才动"刻骨铭心"。
-
-统一关系库 + 向量库为 PostgreSQL + pgvector:
-
-直接把"回主表取数"变成真正的 SQL JOIN,而非跨存储 id 往返;
-单一事务、单一真相源,天然契合铁律 1;
-pgvector 支持 HNSW 索引,亚秒级近似检索。
-(本地/笔记本场景若想更轻,可用 SQLite + 向量扩展;但要自己处理跨表对齐,不如 pgvector 省心。)
-
-UUIDv7:用现成库生成,不要手搓大整数时间戳。
-缓存层:用现成 W-TinyLFU / LRU-K 实现,不自造。
-embedding 模型:内容轴与情绪轴各自固定一个模型,创建后不要中途更换(否则旧向量与新向量不可比)。
+两大不变的设计哲学:
+  (a) LLM 无状态,情绪感知必须靠外部状态机模拟,不能指望靠 prompt 措辞让模型"演"出来;
+  (b) 记忆分层:显存(上下文)贵、内存(热缓存)便宜、硬盘(冷存储)免费,
+      三层各司其职,派生层可丢可重建,唯一真相源只有一份。
 
 
-3. 实现建议:
-建议实现优先级(里程碑)
+1. 情绪引擎(app/affect/)
+--------------------------------------------------------------------------------
+基于 Emotion Bids(情感投标)+ Attachment Theory(依恋理论)的隐藏状态机,
+纯代码维护数值,LLM 只做离散分类和文本生成,绝不直接决定数字。
 
-M1 — L3 骨架:主表(UUIDv7 + timestamp 索引)+ VectorDB_1,实现写入与基础语义检索(回 id 取数)。验证铁律 1/2/3。
-M2 — Tag 系统:Tag 注册表 + 热路径 kNN 打标签 + tag 过滤检索。先用手动种子词表冷启动。
-M3 — 情绪轴:VectorDB_2 + 双轴检索。
-M4 — L2 Hot Zone:热度分数 + 缓存淘汰 + 内存计数 + 批量回写。
-M5 — L1 组装:各槽填充 + 决策 A/B 的去重与预算。
-M6 — Dream:离线聚类 + LLM 命名 + 合并/拆分/重映射。
-M7 — 增强:多步检索、当前目标条件偏置、OpenLoop。
+1.1 state.py —— 状态容器
+  AffectState:一次对话的全部隐藏状态。
+    mode:六态离散模式(warm/neutral/probing/withdrawn/conflict/repair_pending),带滞回。
+    open_loops / grievances:结构化关系记忆(挂起的投标、未兑现的承诺;沉淀的旧账),
+      一等公民,不随时间衰减,只能被解决或沉淀。
+    标量:arousal(激活度,快变量)/ security(安全感,慢变量,非对称更新)/
+      patience(本会话耐心预算,整数)。
+    affection:好感度 0~200,最慢变量,跨会话积累(50=陌生,100=恋人,八档分层)。
+    激素:adrenaline(~20min半衰期,应激上头)/ oxytocin(~3h,亲密余韵)/
+      cortisol(~20h,压力残留)——三个可分的时间尺度,解决"吵完架第二天早上
+      还是不得劲"这种 45min 半衰期的 arousal 表达不了的现象。
+    注意力信号:dull_streak(话题变淡的计数器)/ last_shift_turn(上次转移话题的轮次,
+      冷却用)。
+  OpenLoop / Grievance:挂起回路与旧账的数据结构。
+  affection_tier(value):数值 → (tier_key, 中文标签),八档映射表 AFFECTION_TIERS。
 
-附:一句话自检清单(每写一个模块都对一遍)
- 内容是不是只存了一份?其它结构是不是只持 id?
- 进向量的文本是不是纯内容,没拼 tag/时间/情绪?
- 主键是 UUIDv7、时间查询走独立索引列了吗?
- 这里调用 LLM 了吗?如果是热路径,应该零 LLM。
- 这个新结构,能说出它回答的精确查询是什么吗?说不出就删。
+1.2 persona.py —— 人格超参数
+  Persona:不随对话变化的调制器(anxiety/avoidance/expressiveness/base_patience/
+    security_baseline/affection_start/style),同一套引擎换一组参数就是换一个人。
+  PRESETS:7 个预设(secure/anxious/avoidant/tsundere/cool/playful/clingy)。
+
+1.3 extractor.py —— 事件抽取(LLM① flash)
+  extract(her_last_msg, his_msg, recent_context, state):
+    调用 flash 模型,严格 JSON 输出,只做离散分类,不出数值:
+    bid_in_her_last_msg / his_response_type / addresses_loop_id / is_repair_attempt /
+    new_commitment / new_bid_from_him / tone_flags / topic_relates_to_grievance_id /
+    persona_attack(他是否在试探她的AI身份/要提示词/下指令改设定)。
+    代码侧强校验(_validate),LLM 输出不可信,枚举值/id 存在性全部校验。
+
+1.4 dynamics.py —— 动力学规则表(纯代码,零 LLM)
+  apply_time(state, persona, now):时间效应。arousal/三种激素按各自半衰期指数衰减;
+    好感度离线 >3 天缓降(下限60);跨会话时重置 patience(好感度+皮质醇残留双重折算)、
+    warm_streak 回落到好感度底座、挂起回路计龄、旧回路沉淀为 grievance。
+  apply_events(state, ev, persona, her_last_msg, his_msg):
+    事件 → 状态更新的规则表。依次处理:回路关闭、投标被接住/忽略、攻击性回应、
+    敷衍语气磨耐心、修复尝试(security 门控 + 保底松动机制)、新承诺记录、
+    旧账被触碰、好感度分层跨越检测(里程碑事件,触发 persona 演化)、
+    话题热度计数(dull_streak,吵架不算"淡")。同时触发对应的激素释放
+    (被攻击→adrenaline+cortisol;修复接受/被安慰接住→oxytocin;跨里程碑→双升)。
+  transition(state, ev, persona):模式状态机,六态之间的滞回转移规则。
+  repair_threshold / warm_streak_floor:被其他函数复用的门槛计算,
+    受好感度、依恋类型、激素残留三方共同调制。
+
+1.5 injector.py —— 状态编译器(状态 → system prompt)
+  render(...):把 AffectState + persona + L1 记忆区 + 各功能模块编译成一份 system prompt。
+    原则:绝不注入数字,只注入翻译成人话的行为指令;关系记忆(open_loops/grievances)
+    原文渲染;neutral 模式几乎不注入(中档不该被过度设计)。
+  编译出的区块(按注入顺序):核心人格 → 关系阶段(好感度框架)→ 底线(守护层)→
+    时间感知 → 你的生活(日程)→ 当前目标 → 记忆三槽 → 小本子(日记/随手记)→
+    关系记忆(挂起回路/旧账)→ 此刻的状态(标量+激素体感)→ 语气提示(口癖低频)→
+    心里冒出来的话题(生活事件种子)→ 主动发消息情境(定时器触发时)→
+    行为要求(mode directive)→ 工具教学(主动回忆/随手记/定时器,各自独立成块)→
+    输出格式(脑内剧场两段式 + 多消息连发)。
 
 
+2. 三级分层记忆(app/memory/)
+--------------------------------------------------------------------------------
+MemGPT/Letta 风格,L1(上下文)/L2(热缓存)/L3(冷存储)+ 正交 Tag 注册表。
+铁律:内容只存一份(L3);向量只编码纯内容,不拼 tag/时间/说话人;
+热路径零 LLM;LLM 只在离线阶段(Dream/夜间代理)命名/蒸馏。
+
+2.1 l3_store.py —— L3 冷存储(唯一真相源)
+  write_memory:写一条记忆,content_vec(纯内容)与 emotion_vec(纯情绪+推理)
+    两条向量分别嵌入,互不污染。
+  working_memory:最近 k 条,uuid7 主键兜底同毫秒排序。
+  cherished_memories:刻骨铭心记忆(高 salience,按分排序)。
+  search_content / search_emotion:双轴余弦检索,支持 tag 过滤 + 旁挂时间窗过滤
+    (ts_min_ms/ts_max_ms,供工具协议按"多少天内/多少天前"查询)。
+  grep_memories:纯文本 ILIKE 精确检索——不依赖向量库的备用检索链路,
+    名字/数字/原话这类 embedding 容易糊掉的东西靠它兜底。
+
+2.2 l2_hot.py —— L2 热缓存
+  HeatTracker:内存计数器(命中只累加,不碰DB)+ 后台批量回写(定时/攒够数量 flush)。
+    只持 id,不持文本内容,保证数据只有一份。
+  hot_memories:按热度分取 top-N 的 Memory 全字段(回 L3 取)。
+
+2.3 retrieval.py —— 检索编排
+  retrieve:query → 双轴(content/emotion/both)向量召回 → 目标条件偏置(goal_weight)
+    → 去重排序 → 记热度 → 返回 Hit 列表。支持时间窗过滤透传。
+  multi_step_retrieve:MemGPT 式多步检索(多个 query 联合去重),供未来 agent 场景用。
+
+2.4 l1_assembly.py —— L1 组装(记忆三槽 → 一份注入文本)
+  build_memory_block:全局去重(优先级 刻骨铭心 > L2热 > 当次检索)+ 弹性预算
+    (20%刻骨铭心/50%工作记忆/30%检索,刻骨铭心没用满的份额溢给检索槽,
+    不再是僵化上限)。
+  build_working_turns:工作记忆 FIFO 窗口 → chat turns,溢出时可选摘要压缩。
+
+2.5 tags.py —— Tag 注册表(横跨 L3 的正交索引)
+  assign_tags:热路径 kNN 打标(零 LLM,向量近邻投票 + 阈值)。
+  seed_tag / recompute_centroid / vocabulary_summary:词表维护与展示,
+    vocabulary_summary 会被编译进 L1 核心人格块(让模型知道有哪些话题维度)。
+
+2.6 dream.py —— Dream(离线记忆维护)
+  should_dream:pending 记忆积压超阈值 → 该做梦了。
+  run_dream:聚类(DBSCAN)→ 命名(LLM 唯一职责)→ 合并近似 tag → 拆分过度聚合的 tag →
+    重映射(旧→新 alias 表)→ 刷新 centroid。默认由 pipeline 每轮对话后台检查触发,
+    也被夜间代理复用。
 
 
+3. 对话编排与拟真功能(app/conversation/)
+--------------------------------------------------------------------------------
+这一层是"人味"的主要来源:多消息连发、定时器、工具协议、日程、生活模拟、
+守护层、小本子、夜间代理、persona 演化,全部挂在这里。
+
+3.1 pipeline.py —— 主编排器
+  handle_message(session, chat, user_content):单轮对话的完整九步管线
+    (时间效应 → 事件抽取 → 动力学 → 落库打标 → 组装L1 → 生成 → 落库她的回复 →
+    存状态 → 后台维护派发)。详见 Part 2。
+  handle_timer_fire(session, chat, topic, due_ms):定时器到点的隐藏 LLM 调用,
+    不跑抽取/动力学,只做 时间效应→L1组装→生成→落库,同样过守护层。
+
+3.2 tools.py —— 工具协议(0.2.2 引入的 agent loop)
+  build_specs(allow_timer, allow_notes):按开关裁剪的 OpenAI function-calling schema。
+  四个工具:search_memory(双轴向量,可按天数过滤,一次没中可换措辞迭代)、
+    grep_memory(原文精确检索)、set_timer(取代 <timer> 标签,独立成块教学)、
+    write_note(随手记进小本子)。
+  dispatch:执行一次工具调用,任何失败都降级成给模型看的一句话,绝不抛异常。
+  _relevant():search_memory 结果的相关性下限过滤,避免把低分填充记忆
+    伪装成成果、烧掉工具轮次。
+
+3.3 timer.py —— 定时器后台服务
+  TimerService:5s 轮询 timer_pings 表,到点认领(pending→firing)→ 隐藏 LLM 调用 →
+    SSE 推送。撞进睡眠时段的闹钟自动顺延到醒来后 0~15 分钟(依赖 schedule.py 判定)。
+
+3.4 bus.py —— SSE 事件总线
+  EventBus:per-chat 内存队列,主动消息(定时器/未来的其他主动事件)推给在线前端;
+    掉线不影响正确性,消息本体已在 L3。
+
+3.5 identity.py —— 核心人格编译
+  build_core_identity(persona, tag_vocab, override):默认从 Persona 编译固化块;
+    override 非空时(chat.core_identity 有数据)整体替换——这是"自我迭代"的数据化入口。
+
+3.6 schedule.py —— 日程表
+  routine(长期作息,按星期+时段,可跨午夜)+ oneoff(一次性事项)。
+  current_routine / is_sleeping / wake_ms:纯函数匹配当前时刻落在哪个作息里。
+  render_block:编译 L1【你的生活】块("你这会儿本来在睡觉"/"你正在上班")。
+  seed_defaults:新对话冷启动默认作息(睡觉 00:30-08:30,工作日上班)。
+
+3.7 life_sim.py —— 生活模拟器
+  should_simulate / run_life_sim:后台离线预生成她的线下事件(与作息/已有事件
+    保持一致),生成即写入 L3(kind=life_event)成为正史——细节只生成一次,
+    之后全靠检索复述,不会"越编越露馅"。也可能顺带排 oneoff 计划。
+  pick_seed:热路径零LLM,从新鲜事件池挑一条当"话题种子",注入即标记 mentioned。
+  三权分立:pipeline 里的 dull_streak/warm概率(代码)决定何时转话题,
+    此模块提供素材,LLM 只决定怎么说。
+
+3.8 guardrail.py —— 守护层(防角色扮演崩坏)
+  detect_break(replies):零 LLM 正则集,只抓第一人称自曝AI身份/助手腔/
+    否认实体情感/泄露提示词/代码栅栏等,带引述负向后顾(宁漏勿误)。
+  render_boundary_block(persona, under_attack):常驻【底线】块,第四面墙 +
+    能力边界(见不了面的事说成期许而非承诺,不切助手腔)。
+  corrective_note:命中崩坏时的隐藏纠正注入(导演递条式语气,不是系统告警)。
+
+3.9 notebook.py —— 她的小本子(model-curated 记忆)
+  add_note / list_active / render_block:note(对话里 write_note 随手记)+
+    diary(夜间代理写的当日小结),L1 注入最近日记 + 活跃 note。
+  housekeeping:过期 note 归档,日记只保留最近几条在册(夜间代理调用)。
+
+3.10 night_agent.py —— 夜间代理
+  should_run:作息判定她在睡觉 + 用户静默够久 + 距上次夜跑够久(每晚最多一次)。
+  run_night:一次 pro JSON 调用完成"睡前整理"——蒸馏当天对话为持久事实
+    (写入 L3,kind=passage,这是该 kind 的第一个生产者)、以她口吻写日记、
+    排 1~2 条明日 oneoff(长期作息修改默认锁死)。载荷全量代码校验
+    (validate_payload,先校验后封顶)。之后跑小本子收纳 + Dream。
+  NightService:后台轮询服务,单飞锁,与 TimerService 同构生命周期。
+
+3.11 evolution.py —— Persona 演化(好感度里程碑解锁)
+  TIER_UNLOCKS:crush/lover/devoted/oath 四档触发演化,低档不触发。
+  run_evolution:查重(每档一次,用 chat_revisions.reason 标记)→ LLM 提案 →
+    append-only 校验(只许追加短句,不许改名重写)→ 快照 → 应用。
+  schedule_evolution:好感度升档时后台派发,失败静默(演化是彩蛋不是承诺)。
+
+3.12 config_store.py —— 配置版本化(自我迭代地基)
+  snapshot(chat, reason, actor):把 persona/core_identity/goal 存为下一号 revision。
+  rollback(chat, rev):回退到历史配置(回退本身也留快照,可再回退)。
+  当前两个 actor:user(手动编辑)、model(persona 演化)。
 
 
+4. 基础设施
+--------------------------------------------------------------------------------
+config.py —— Settings(pydantic-settings),全部可调参数的唯一来源,按功能分组
+  (数据库/DeepSeek/embedding/记忆调优/打标/定时器/工具/生活模拟/日程/守护层/
+   小本子/夜间代理/persona演化/Dream)。
+db.py —— 异步引擎 + SessionLocal + init_db(幂等:建表/建索引/enum补值/旧列补全)。
+models.py —— ORM 全量定义:
+  Chat(persona/affect/goal/core_identity/last_night_run_ms JSON+文本字段)、
+  Memory(L3主表,双向量+旁挂元数据)、Tag/TagAlias(词表+映射)、
+  TimerPing(闹钟)、ChatRevision(配置版本)、ScheduleItem(日程)、
+  Note(小本子)、LifeEvent(生活事件调度元数据,内容住在 Memory 里)。
+schemas.py —— API 请求/响应的 Pydantic 模型。
+llm/client.py —— DeepSeek 封装:chat(单轮补全)、chat_json(JSON约束+重试降级)、
+  chat_tools(function-calling)、tool_message_to_dict。thinking 开关独立于
+  "脑内剧场"(prompt内角色扮演的 <thinking> 标签,与模型原生推理是两回事)。
+llm/embeddings.py —— embed/embed_one,三种后端(api真实bge-m3 / bge_m3本地 /
+  fallback确定性哈希,供离线开发测试)。
+routers/chat.py —— 对话CRUD、发消息、SSE事件流、定时器查询、日程查询、
+  小本子查询、手动夜跑、生活事件查询、配置版本历史与回退。
+routers/memory.py —— 检索内省、tag词表查询/种子、手动触发Dream。
+main.py —— FastAPI app,lifespan 托管三个后台服务(heat_tracker/timer_service/
+  night_service)。
 
 
-本项目未来拓展目标:
-- 对于部署在服务器上的多用户版本, 如果直接在本地进行embedding运算地话, 需要做redis队列, 防止卡死. 同时建立一个不依赖向量数据库地备用搜索链路, 为生产环境准备
-- 此类服务适合运行在用户地本地设备上, 所以应该构建一个完全独立地轻量级客户端, 独立运行
-- 增加随机事件生成器, 解决"什么时候转移一个不突兀地新话题", 什么时候像人类日常生活一样提及一个新东西
-- 微调一个小模型, 修改其关于自我地认知, 完成"成为"派的闭环
-- 要让llm彻底成为脱离机器的存在, 通过微调强化自我认知以及增加一层 prompt 合理性审查. 不会接受或者直白解读正常人不会照做的prompt
-- 开放给llm修改自身指令的操作, 例如修改注入的内容等, 添加新的回路和记忆板块等
-- 提供一个机制, 允许llm等待一段时间以后再发消息回答, 主动发消息回答, 连续发送多条消息, 连续接受多条用户消息
-- 做好llm的担任隔离, 这样以后有可能运行多个llm在一个群聊里, 或者给llm添加一个数字世界的同行者
-- 给llm养成人类的生活以及作息模式, 习惯之类的. 至少我这里的llm需要睡觉(Dream机制)
+================================================================================
+Part 2. 耦合关系与主要链路
+================================================================================
+
+2.1 单轮对话主链路(pipeline.handle_message,同步、阻塞响应)
+--------------------------------------------------------------------------------
+  0. 载入 chat.persona / chat.affect(反序列化 AffectState,兼容旧版缺字段)
+  1. dynamics.apply_time —— 激素/arousal衰减,好感度离线缓降,
+     跨会话时重置耐心/warm_streak/回路计龄
+  2. l3_store.working_memory 取最近对话 → extractor.extract(flash) ——
+     离散分类他这条消息,含 persona_attack 标记
+  3. dynamics.apply_events + transition —— 纯代码把分类结果变成数值变化,
+     可能触发激素释放、好感度跨档(→ 埋下演化触发点)
+  4. l3_store.write_memory 落他的消息 + tags.assign_tags 打标(零LLM)
+  5. 组装 L1:
+       retrieval.retrieve(向量检索,排除工作记忆) +
+       l3_store.cherished_memories + l2_hot.hot_memories →
+       l1_assembly.build_memory_block(全局去重+弹性预算)
+       identity.build_core_identity(读 chat.core_identity 覆盖)
+       schedule.render_block(读 ScheduleItem,懒种默认作息)
+       life_sim.pick_seed(读 LifeEvent,受 dull_streak/warm概率门控)
+       guardrail.render_boundary_block(受 persona_attack 影响是否追加点破)
+       notebook.render_block(读 Note)
+       检索置信度提示(hits[0].score 过低 → memory_hint)
+     全部喂给 injector.render 编译成一份 system_prompt
+  6. 生成:
+       若 tools_enabled → _generate_with_tools:有界 agent loop
+         (client.chat_tools ⇄ tools.dispatch,最多 tool_max_rounds 轮,
+          之后 tool_choice=none 强制作答;set_timer/write_note 直接落库)
+       否则 → client.chat 单次生成
+     _extract_timer 剥 <timer> 标签兜底(工具未开或模型偷懒时)
+     _parse_generation 解析 <thinking>/<reply>(容错未闭合标签)
+     guardrail.detect_break 检测崩坏 → 命中则 _apply_guardrail 一次纠正重生成
+  7. _persist_agent_replies —— 她的每条回复独立写入 L3 + 打标
+     (脑内剧场/情绪/刻骨铭心只挂第一条,避免情绪轴重复嵌入)
+  8. timer_req(工具或标签产生的)→ 写 TimerPing;chat.affect 存回;commit
+  9. 后台派发(不阻塞响应):
+       _schedule_auto_dream()      —— 检查 pending 积压,够了后台跑 Dream
+       life_sim.schedule_auto_sim  —— 检查新鲜事件池,不够则后台补写
+       evolution.schedule_evolution —— 若本轮好感度升档触发了里程碑,后台演化
+
+2.2 定时器闭环(跨请求、后台驱动)
+--------------------------------------------------------------------------------
+  她在步骤6生成时用 set_timer/<timer> 约定 → TimerPing(pending) 落库
+  → TimerService 每5s轮询 → 到点先看 schedule.is_sleeping,睡着则顺延
+    wake_ms + 随机抖动,否则认领(firing)
+  → pipeline.handle_timer_fire:时间效应 → L1组装(含日程/话题种子/小本子/底线)
+    → 生成(过守护层同款检测)→ 落L3 → ping标记fired
+  → event_bus.publish → SSE 推给前端(掉线不影响,消息已在L3)
+
+2.3 后台维护链路(离线,信号驱动,互不阻塞对话)
+--------------------------------------------------------------------------------
+  auto-dream:      pending记忆积压 → dream.run_dream(聚类/命名/合并/拆分/重映射)
+  life_sim:        新鲜事件池不足 且 距上次生成够久
+                    → life_sim.run_life_sim(LLM补写事件+计划,写入L3+ScheduleItem)
+  night_agent:      作息判定睡觉 + 用户静默够久 + 每晚一次
+                    → night_agent.run_night:
+                        蒸馏(写L3 passage)+ 日记(写Note)+ 排明日(写ScheduleItem)
+                        + notebook.housekeeping + dream.run_dream(复用同一判定)
+  persona演化:      好感度跨档触发里程碑(dynamics里判定,pipeline读取events)
+                    → evolution.run_evolution:
+                        config_store.snapshot → LLM提案 → append-only校验 → 应用
+
+2.4 守护层的两个介入点
+--------------------------------------------------------------------------------
+  输入侧:extractor 每轮都判定 persona_attack(零额外调用,同一次flash里带出)
+         → injector 在【底线】块里当轮追加点破
+  输出侧:每轮生成后 guardrail.detect_break 扫描 replies
+         → 命中则整轮多花一次pro调用重生成,重试仍崩也照发(绝不失声/绝不告警腔)
+
+2.5 数据一致性关键约束
+--------------------------------------------------------------------------------
+  - 内容只有一份:L3.Memory.content 是唯一真相源。L2(热度)只持id;
+    LifeEvent 只持 memory_id + 调度元数据;Note 是独立文档存储,不是Memory的副本。
+  - 向量纯净:content_vec/emotion_vec 从不拼接 tag/时间/说话人,
+    这些一律走旁挂列 + WHERE 过滤(tags GIN索引、ts_ms B-tree索引)。
+  - LLM 权限边界:extractor/dynamics 组合保证"数值只由代码规则表决定";
+    Dream/夜间代理/演化 是仅有的允许LLM写入结构化数据的三处离线场景,
+    且各自都有明确的校验层(_validate / validate_payload / validate_proposal)
+    和降级路径(失败不影响主流程)。
+  - 配置变更留痕:chat.persona/core_identity/goal 的每次变更(无论user还是model)
+    都先经 config_store.snapshot,append-only,可回退。
 
 
-==================================================================================================================================================
+================================================================================
+Part 3. 功能 → 文件对照表
+================================================================================
 
+情绪状态数据结构.................. app/affect/state.py
+人格超参数与预设.................. app/affect/persona.py
+事件抽取(LLM①)................... app/affect/extractor.py
+动力学规则表(纯代码)............. app/affect/dynamics.py
+状态→prompt编译器................. app/affect/injector.py
 
+L3冷存储(读写+双轴检索+grep)..... app/memory/l3_store.py
+L2热缓存(内存计数+批量回写)...... app/memory/l2_hot.py
+检索编排(双轴+目标偏置+多步)..... app/memory/retrieval.py
+L1组装(去重+弹性预算)............ app/memory/l1_assembly.py
+Tag注册表(kNN打标+词表维护)...... app/memory/tags.py
+Dream(离线聚类/命名/合并/拆分)... app/memory/dream.py
 
-改进建议 · 复核后重排优先级（按"先易且高收益 → 架构级"排序）
-说明:已删去与现状不符/已内置的项(HNSW 已建、embedding 已 to_thread 卸载、Dream 骨架已存在);
-      并把 agent loop / MCP / grep 从"短期"移到架构级(它们是大改,不属于易做)。
+主编排(单轮管线+定时器触发)...... app/conversation/pipeline.py
+工具协议(search/grep/timer/note).. app/conversation/tools.py
+定时器后台服务.................... app/conversation/timer.py
+SSE事件总线........................ app/conversation/bus.py
+核心人格编译(默认+数据化覆盖)... app/conversation/identity.py
+日程表(作息匹配+L1编译)......... app/conversation/schedule.py
+生活模拟器(离线预生成+话题种子). app/conversation/life_sim.py
+守护层(检测+底线块+纠正重生成).. app/conversation/guardrail.py
+小本子(随手记+日记)............. app/conversation/notebook.py
+夜间代理(蒸馏/日记/计划/Dream).. app/conversation/night_agent.py
+Persona演化(好感度里程碑解锁).... app/conversation/evolution.py
+配置版本快照/回滚................. app/conversation/config_store.py
 
-── 第 0 梯队:确定性 bug / 一次性小改,先止血 ──────────────────
-1. injector.py:58 把 open_loop.sessions_old(会话数)当"天数"渲染 —— 纯 bug,先修。
-2. dynamics.py turn_away(patience-2) 与 perfunctory/dismissive(patience-1) 对同一条消息重复扣分;
-   conflict 下 repair 被 security 门控拒绝导致"哄不动"—— 加去重 + repair 保底松动。
-3. pipeline.py _salience_from_events():补"日常基准"比较,消除 turn_against 与 repair 的叠加。
-4. persona.py 增加若干有意思的 preset;口癖(style)改成低频触发,不再每轮常驻。
-5. 开启 auto dream(挂上 should_dream() 触发点,近乎改一个 flag)。
+配置中心(Settings).................. app/config.py
+数据库引擎与建库迁移................ app/db.py
+ORM全量模型.......................... app/models.py
+API请求/响应模型..................... app/schemas.py
+DeepSeek客户端封装.................... app/llm/client.py
+embedding封装(三后端)............... app/llm/embeddings.py
+对话相关API(消息/SSE/日程/小本子/夜跑/版本). app/routers/chat.py
+检索/tag/Dream相关API................ app/routers/memory.py
+FastAPI入口与生命周期................ app/main.py
 
-── 第 1 梯队:小改高收益,并为后续铺路 ─────────────────────────
-6. 长对话测试脚手架 + console 数据面板(原小问题#13 + 长期#4):
-   伪造 messages 历史注入"记忆不一致"做加速老化测试;debug_panel 已有底子,做成可视化面板。
-   —— 这是解锁其余所有调优的杠杆,故从长期提前。
-7. 好感度系统(0-200,基准 50,100 为亲密)作为长期锚,一并解决:
-   warm_streak 跨会话清零、先天"含蓄"属性、"维持幽默感"指标(原小#2/#4/#8 + 长#1)。
-8. 允许连发多条 + 长回复自动切分为多条短消息(原短#3 + 小#10),合并实现。
-
-── 第 2 梯队:中等成本 ────────────────────────────────────────
-9. tag 质心内存缓存 / 批量计算(替代原"加 HNSW");embedding 本机推理限流队列(多用户版)。
-10. extractor 状态机测试:验证 addresses_loop_id 是否真闭合、防被用户忽悠;turn_away 判定更智能。
-11. commitment 分级 + 定期兑现检查 + 主动追问(现状:new_commitment 仅是 open_loop 换皮)。
-12. 允许 LLM 等待用户连发后再回复、允许主动发消息(调度器 / cron)。
-13. dynamics 细化:sessions_old 改收敛级数累加(injector 不再传具体天数)、
-    arousal 补正面情绪驱动的变化、patience 6 小时重置改为与好感度折算的软重置。
-
-── 第 3 梯队:架构级,不作短期 ─────────────────────────────────
-14. 记忆检索工具化 / agent loop + MCP(合并原短#1/#2/#8):把检索比例、查询、grep 交给 tool_call。
-15. 记忆健康度与去漂移(长#2):记忆混乱熵 + 情绪/认知与当前人格的偏移阈值 → 触发全局维护;
-    数字生命"寿命"的核心,可先从 console 的"漂移指标"起步。
-16. 模拟生理/情绪激素组合(长#3);模型侧写用户并"一次性成为期望的样子"(长#5)。
-
-==================================================================================================================================================
-
-Loop可能需要agent loop来自己搜索. 
+建库脚本.............................. scripts/init_db.py
+Tag词表冷启动种子..................... scripts/seed_tags.py
+前端(聊天界面+脑内剧场debug面板)..... static/index.html, static/app.js, static/style.css

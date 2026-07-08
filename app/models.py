@@ -71,6 +71,8 @@ class Chat(Base):
     # 核心人格数据化(为"自我迭代"打地基):非空时覆盖 identity.py 编译的默认块。
     # 修改必须走 config_store.snapshot() 留版本,不允许静默改写。
     core_identity: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 夜间代理上次运行时刻(每晚最多一次的闸)
+    last_night_run_ms: Mapped[int] = mapped_column(BigInteger, default=0)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_active: Mapped[object] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -241,6 +243,24 @@ class ScheduleItem(Base):
 #  一次,之后靠检索复述 —— 这是话题转移不"越编越露馅"的关键。
 #  本表只承载种子调度元数据(状态/情绪色彩/发生时间),内容不二存。
 # ──────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────
+#  Notes — 她的小本子(model-curated 记忆,借鉴 memory-tool 的文件式思路)。
+#  日记由夜间代理写;note 由她在对话里 write_note 随手记。
+#  这是独立的文档类存储(她写的笔记本),不是 memories 的副本 —— 铁律 1 无涉。
+# ──────────────────────────────────────────────────────────────────
+class Note(Base):
+    __tablename__ = "notes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
+    chat_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(16), default="note", index=True)  # note | diary
+    content: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active | archived
+    created_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+
+
 class LifeEvent(Base):
     __tablename__ = "life_events"
 

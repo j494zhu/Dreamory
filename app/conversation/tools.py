@@ -30,7 +30,7 @@ SEARCH_MIN_SCORE = 0.40
 
 
 # ── 工具 schema ───────────────────────────────────────────────────────
-def build_specs(allow_timer: bool) -> list[dict]:
+def build_specs(allow_timer: bool, allow_notes: bool = False) -> list[dict]:
     specs = [
         {
             "type": "function",
@@ -75,6 +75,27 @@ def build_specs(allow_timer: bool) -> list[dict]:
             },
         },
     ]
+    if allow_notes:
+        specs.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": "write_note",
+                    "description": (
+                        "往你的私人小本子里记一条(他的喜好、你们说好的事、你自己想做的事)。"
+                        "小本子每轮都会带在身上,记下的事你不会忘。挑值得记的记。"
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string",
+                                        "description": "要记的内容,一句话,不超过120字"},
+                        },
+                        "required": ["content"],
+                    },
+                },
+            }
+        )
     if allow_timer:
         specs.append(
             {
@@ -186,6 +207,15 @@ async def _do_grep(session: AsyncSession, chat, args: dict) -> ToolOutcome:
                        hit_ids=[m.id for m in rows])
 
 
+async def _do_write_note(session: AsyncSession, chat, args: dict) -> ToolOutcome:
+    from app.conversation import notebook
+
+    note = await notebook.add_note(session, chat.id, args.get("content") or "")
+    if note is None:
+        return ToolOutcome("(小本子写满了/内容是空的 —— 挑最要紧的记,旧的会在夜里整理掉)")
+    return ToolOutcome(f"(已记进小本子:『{note.content}』)")
+
+
 async def _do_set_timer(session: AsyncSession, chat, args: dict,
                         pending_count: int) -> ToolOutcome:
     if pending_count >= settings.timer_max_pending:
@@ -219,6 +249,8 @@ async def dispatch(
             return await _do_grep(session, chat, args)
         if name == "set_timer":
             return await _do_set_timer(session, chat, args, pending_timer_count)
+        if name == "write_note":
+            return await _do_write_note(session, chat, args)
         return ToolOutcome(f"(没有叫 {name} 的工具)")
     except Exception as e:  # noqa: BLE001 — 工具失败不能把生成主流程带崩
         return ToolOutcome(f"(这次没翻到:{type(e).__name__})")

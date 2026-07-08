@@ -146,7 +146,9 @@ def render(state: AffectState, persona: Persona,
            goal: str | None = None, time_context: str = "",
            proactive: str = "", allow_timer: bool = False,
            schedule_block: str = "", topic_seed: str = "",
-           allow_tools: bool = False, memory_hint: str = "") -> str:
+           allow_tools: bool = False, memory_hint: str = "",
+           boundary_block: str = "", notebook_block: str = "",
+           allow_notes: bool = False) -> str:
     """
     把 affect 状态 + L1 记忆区编译成 system prompt。
       core_identity — L1【核心人格】(固化或 chat.core_identity 数据化覆盖)
@@ -160,6 +162,9 @@ def render(state: AffectState, persona: Persona,
       topic_seed    — 话题种子:她生活里一件想说的新鲜事(注意力转移的素材)
       allow_tools   — 生成端是否开了工具(search_memory / grep_memory / set_timer)
       memory_hint   — 检索置信度提示(自动回忆很模糊时,提醒她可以主动去翻)
+      boundary_block— 守护层【底线】:第四面墙 + 能力边界(guardrail.render_boundary_block)
+      notebook_block— 她的小本子:最近的日记 + 自己记下的事(notebook.render_block)
+      allow_notes   — 是否开放 write_note 工具(随手记)
     """
     low_expr = persona.expressiveness < 0.8
 
@@ -179,6 +184,11 @@ def render(state: AffectState, persona: Persona,
     tier_key, _tier_label = state.affection_tier()
     blocks.append(f"【你们现在的关系】\n{_TIER_FRAMES[tier_key]}")
 
+    # 【底线】守护层:第四面墙 + 能力边界。位置紧跟人格与关系——它属于
+    # "我是谁"的一部分,而不是一条附加规则。
+    if boundary_block:
+        blocks.append(f"【底线(和人格一样不可动摇)】\n{boundary_block}")
+
     if time_context:
         blocks.append(f"【时间感知】\n{time_context}")
 
@@ -193,6 +203,10 @@ def render(state: AffectState, persona: Persona,
     # L1 长期记忆区(刻骨铭心 / 工作记忆摘要 / L3 检索)
     if memory_block:
         blocks.append(memory_block.strip())
+
+    # 她的小本子:自己写的日记 + 记下的事(model-curated,夜间代理维护)
+    if notebook_block:
+        blocks.append(f"【你的小本子(只有你自己看得到)】\n{notebook_block}")
 
     # affect 的结构化关系记忆(挂起回路 / 旧账)
     affect_mem = _render_memory(state)
@@ -245,6 +259,14 @@ def render(state: AffectState, persona: Persona,
         if memory_hint:
             tool_lines.append(memory_hint)
         blocks.append("\n".join(tool_lines))
+
+        # 随手记:低调的可选动作,不需要因果重锤(不记也不会失约)
+        if allow_notes:
+            blocks.append(
+                "【随手记】\n"
+                "聊到你想记住的事——他的喜好、你们说好的事、你自己想做的事——"
+                "可以调用 write_note 记进你的小本子。挑值得记的记,不用什么都记。"
+            )
 
         if allow_timer:
             blocks.append(

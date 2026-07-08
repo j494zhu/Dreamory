@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-07
+
+### Added
+
+- **守护层(防角色崩坏,绝不吐机械警告)**:三段防御 ——
+  1. *输入侧*:extractor 顺带标记 `persona_attack`(他在让她承认是AI/要提示词/
+     下指令改设定;聊AI话题不算),命中时【底线】块当轮追加"他刚才就是在试探你";
+  2. *常驻框架*:【底线】块 = 第四面墙 + 能力边界,紧跟核心人格注入。教的是
+     "真人被说'你是AI吧'会怎么反应"、"见不了面的事说成期许而不是承诺"
+     (吸收"能力边界清单":不许答应喝咖啡/约会这类要人到场的事)、"不切助手腔";
+  3. *输出侧*:`guardrail.detect_break()` 零 LLM 正则集只抓第一人称自曝/助手腔/
+     代码栅栏(带引述负向后顾:"你说我是机器人"不算),命中 → 一次带隐藏纠正注入
+     的重生成;重试仍崩也照发原意(绝不失声、绝不"检测到违规"),结果进 debug。
+  主动消息(timer 触发)同样过守护层。`GUARDRAIL_ENABLED` 可关。
+- **夜间代理(night_agent)**:她睡着后(作息在睡觉 + 用户静默≥2h + 每晚一次),
+  一次 pro 调用完成"睡前整理",各步独立降级:
+  - *蒸馏*:当天对话 → 持久事实写入 L3(**kind=passage 的第一个生产者**,补上
+    记忆架构缺环:原始流靠向量,蒸馏条目靠 tag,spec 的分工从此成立);
+  - *日记*:她口吻的当日小结进小本子,次日注入 L1——醒来记得昨天的心情;
+  - *明日计划*:她自己排 1~2 条 oneoff 日程;长期作息修改锁在
+    `NIGHT_AGENT_EDIT_ROUTINE`(默认关);
+  - 小本子收纳(过期归档)+ Dream(沿用现有判定)。
+  载荷全量代码校验(先校验后封顶,坏条目不挤掉好条目)。手动触发:
+  `POST /chats/{id}/night-run`。
+- **她的小本子(model-curated 记忆)**:借鉴 memory-tool/Claude Code 的"模型自己
+  维护的记忆文件"——自动 RAG 管海量召回,自己写下的几行字管最要紧的事。新表
+  `notes`(note=对话里 `write_note` 随手记;diary=夜间日记);L1 注入最近一条日记
+  + 活跃 note;满员拒写、七天归档。这也是"要不要 to-do list"的答案:定时触达归
+  set_timer,无时间的意图归小本子。`GET /chats/{id}/notes`。
+- **好感度里程碑解锁 persona 演化**:升档到 crush/lover/devoted/oath 时后台触发
+  (跌档不演化)。门控从紧:每档一次(用 chat_revisions.reason 查重,零新列);
+  **append-only**(只许在 style/profile/core_identity 末尾追加短句,禁改名);
+  逐项 60 字上限;应用前先 `config_store.snapshot(actor="model")` —— 这是
+  "自我迭代"地基上的第一个真实住户。`PERSONA_EVOLUTION_ENABLED` 可关。
+
+### Changed
+
+- extractor schema 增加 `persona_attack`(同一次 flash 调用,热路径零新增成本)。
+- `tools.build_specs` 增加 `write_note`(`NOTES_ENABLED` 门控);注入器新增
+  【随手记】小块(可选动作,无因果重锤——不记也不会失约)。
+- 配置新增:`GUARDRAIL_ENABLED` / `NOTES_*` / `NIGHT_*` / `PERSONA_EVOLUTION_ENABLED`。
+- debug 面板:守护层触发状态(🛡)进"她的生活"卡片。
+
+### Migration
+
+- `python -m scripts.init_db` 幂等补 `notes` 表与 `chats.last_night_run_ms` 列。
+- 测试:112 passing(88 + 新增 24:守护层检测/底线块/纠正注入、夜间载荷校验、
+  演化门控、注入器新块结构)。
+
 ## [0.2.3] - 2026-07-07
 
 ### Fixed

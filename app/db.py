@@ -56,3 +56,8 @@ async def init_db() -> None:
         await conn.execute(
             text("ALTER TABLE chats ADD COLUMN IF NOT EXISTS core_identity TEXT")
         )
+        # 0.3.0 升级:夜间代理的"每晚一次"闸
+        await conn.execute(
+            text("ALTER TABLE chats ADD COLUMN IF NOT EXISTS "
+                 "last_night_run_ms BIGINT NOT NULL DEFAULT 0")
+        )

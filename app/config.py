@@ -83,6 +83,24 @@ class Settings(BaseSettings):
     # ── Schedule(日程表)──────────────────────────────────────────
     schedule_enabled: bool = Field(True, alias="SCHEDULE_ENABLED")
 
+    # ── Guardrail(守护层:防角色崩坏,绝不吐机械警告)───────────────
+    guardrail_enabled: bool = Field(True, alias="GUARDRAIL_ENABLED")
+
+    # ── Notebook(她的小本子:write_note 随手记 + 夜间日记)──────────
+    notes_enabled: bool = Field(True, alias="NOTES_ENABLED")
+    notes_max_active: int = Field(12, alias="NOTES_MAX_ACTIVE")
+
+    # ── Night agent(夜间代理:蒸馏/日记/明日计划/Dream)─────────────
+    night_agent_enabled: bool = Field(True, alias="NIGHT_AGENT_ENABLED")
+    night_poll_seconds: int = Field(600, alias="NIGHT_POLL_SECONDS")
+    night_idle_hours: float = Field(2.0, alias="NIGHT_IDLE_HOURS")      # 用户静默这么久才开工
+    night_min_gap_hours: float = Field(20.0, alias="NIGHT_MIN_GAP_HOURS")  # 每晚最多一次
+    # 允许夜间代理改她自己的长期作息(routine)。默认关:只允许排明日 oneoff。
+    night_agent_edit_routine: bool = Field(False, alias="NIGHT_AGENT_EDIT_ROUTINE")
+
+    # ── Persona evolution(好感度里程碑解锁的人格演化)──────────────
+    persona_evolution_enabled: bool = Field(True, alias="PERSONA_EVOLUTION_ENABLED")
+
     # ── Dream ─────────────────────────────────────────────────────
     # Auto-dream is ON: after a turn commits, the pipeline fires should_dream()
     # and, if the pending backlog is high enough, runs a Dream cycle in the

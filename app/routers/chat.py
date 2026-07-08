@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.affect.persona import PRESETS, Persona
 from app.affect.state import AffectState
 from app.config import settings
-from app.conversation import config_store, pipeline
+from app.conversation import config_store, night_agent, notebook, pipeline
 from app.conversation import schedule as sched
 from app.conversation.bus import event_bus, sse_format
 from app.db import SessionLocal, get_session
@@ -143,6 +143,25 @@ async def get_schedule(chat_id: uuid.UUID, session: AsyncSession = Depends(get_s
          "source": i.source}
         for i in items
     ]
+
+
+@router.get("/{chat_id}/notes")
+async def get_notes(chat_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    """她的小本子(日记 + 随手记,调试/前端展示用)。"""
+    await _get_chat(session, chat_id)
+    rows = await notebook.list_active(session, chat_id)
+    return [
+        {"id": str(n.id), "kind": n.kind, "content": n.content, "created_ms": n.created_ms}
+        for n in rows
+    ]
+
+
+@router.post("/{chat_id}/night-run")
+async def run_night_now(chat_id: uuid.UUID, force: bool = True,
+                        session: AsyncSession = Depends(get_session)):
+    """手动触发一次夜跑(测试/调试用;正常情况由后台服务在她睡着后自动跑)。"""
+    chat = await _get_chat(session, chat_id)
+    return await night_agent.run_night(session, chat, force=force)
 
 
 @router.get("/{chat_id}/life-events")

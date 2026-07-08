@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import __version__
 from app.config import settings
+from app.conversation.night_agent import night_service
 from app.conversation.timer import timer_service
 from app.db import init_db
 from app.memory.l2_hot import heat_tracker
@@ -28,9 +29,11 @@ async def lifespan(app: FastAPI):
     await init_db()
     heat_tracker.start()
     timer_service.start()   # 她的闹钟:到点主动来找用户
+    night_service.start()   # 夜间代理:她睡着后蒸馏记忆/写日记/排明天
     try:
         yield
     finally:
+        await night_service.stop()
         await timer_service.stop()
         await heat_tracker.stop()
 

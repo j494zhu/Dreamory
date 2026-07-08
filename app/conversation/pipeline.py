@@ -43,7 +43,7 @@ from app.affect import dynamics, extractor, injector
 from app.affect.persona import PRESETS, Persona
 from app.affect.state import AffectState
 from app.config import settings
-from app.conversation import life_sim, tools
+from app.conversation import evolution, guardrail, life_sim, notebook, tools
 from app.conversation import schedule as sched
 from app.conversation.identity import build_core_identity
 from app.llm import client
@@ -252,14 +252,44 @@ async def _pending_timer_count(session: AsyncSession, chat_id) -> int:
 WARM_SHIFT_PROB = 0.2   # warm 模式下即使话题不淡,也偶尔想分享点自己的事
 
 
+async def _apply_guardrail(
+    persona, messages: list[dict], raw_clean: str,
+    thinking: str, replies: list[str], timer_req: dict | None,
+) -> tuple[str, list[str], dict | None, dict | None]:
+    """输出侧守护:回复里检出角色崩坏 → 一次带隐藏纠正注入的重生成。
+    重试仍崩也照发(绝不失声、绝不吐机械警告),结果记进 debug。
+    返回 (thinking, replies, timer_req, guard_info|None)。"""
+    if not settings.guardrail_enabled:
+        return thinking, replies, timer_req, None
+    reasons = guardrail.detect_break(replies)
+    if not reasons:
+        return thinking, replies, timer_req, None
+    try:
+        retry_msgs = messages + [
+            {"role": "assistant", "content": raw_clean},
+            {"role": "user", "content": guardrail.corrective_note(reasons, persona)},
+        ]
+        raw2 = await client.chat(retry_msgs, model=MODEL_PRO, temperature=0.7, thinking=False)
+        raw2, timer2 = _extract_timer(raw2)
+        thinking2, replies2 = _parse_generation(raw2)
+        if replies2:
+            still = guardrail.detect_break(replies2)
+            info = {"triggered": reasons, "clean_after_retry": not still}
+            return thinking2, replies2, (timer_req or timer2), info
+    except Exception:  # noqa: BLE001 — 守护自身失败就发原文,绝不失声
+        logger.exception("guardrail retry failed; keeping original reply")
+    return thinking, replies, timer_req, {"triggered": reasons, "clean_after_retry": False}
+
+
 async def _generate_with_tools(
     session: AsyncSession, chat: Chat, messages: list[dict], *,
     allow_timer: bool, exclude_ids: set[uuid.UUID], pending_timers: int,
+    allow_notes: bool = False,
 ) -> tuple[str, list[dict], dict | None]:
     """有界工具循环:最多 tool_max_rounds 次往返,之后 tool_choice=none 强制作答。
     任何一环失败都整体降级为无工具的单次生成 —— 工具是增强,不是依赖。
     返回 (raw文本, 工具调用trace, 工具定下的timer|None)。"""
-    specs = tools.build_specs(allow_timer)
+    specs = tools.build_specs(allow_timer, allow_notes)
     trace: list[dict] = []
     timer_set: dict | None = None
     pending = pending_timers
@@ -400,6 +430,19 @@ async def handle_message(
             "先搜一下再回,别不懂装懂,也别凭空编。)"
         )
 
+    # 守护层【底线】:第四面墙 + 能力边界;本轮被试探(persona_attack)时追加点破
+    boundary_block = ""
+    if settings.guardrail_enabled:
+        boundary_block = guardrail.render_boundary_block(
+            persona, under_attack=bool(events.get("persona_attack")),
+        )
+
+    # 她的小本子:日记 + 随手记(model-curated,夜间代理维护)
+    notebook_block = ""
+    if settings.notes_enabled:
+        notebook_block = await notebook.render_block(session, chat.id)
+    allow_notes = settings.notes_enabled and settings.tools_enabled
+
     system_prompt = injector.render(
         state, persona, core_identity=core_identity,
         memory_block=memory_block, goal=chat.goal,
@@ -407,6 +450,8 @@ async def handle_message(
         allow_timer=allow_timer,
         schedule_block=schedule_block, topic_seed=topic_seed,
         allow_tools=settings.tools_enabled, memory_hint=memory_hint,
+        boundary_block=boundary_block, notebook_block=notebook_block,
+        allow_notes=allow_notes,
     )
 
     # 6. generate (LLM②) -----------------------------------------------------
@@ -421,11 +466,17 @@ async def handle_message(
         raw, tool_trace, tool_timer = await _generate_with_tools(
             session, chat, messages, allow_timer=allow_timer,
             exclude_ids=working_ids | l1_ids, pending_timers=pending_timers,
+            allow_notes=allow_notes,
         )
     else:
         raw = await client.chat(messages, model=MODEL_PRO, temperature=0.85, thinking=False)
     raw, timer_req = _extract_timer(raw)          # <timer> 标签兜底(工具未开/模型偷懒)
     thinking, replies = _parse_generation(raw)    # 一到多条连发消息
+
+    # 6.5 输出侧守护:检出角色崩坏 → 一次纠正重生成(绝不吐机械警告)
+    thinking, replies, timer_req, guard_info = await _apply_guardrail(
+        persona, messages, raw, thinking, replies, timer_req,
+    )
 
     # 7. persist her replies to L3 (content + reasoning + emotion) + tag -----
     cherish, salience = _salience_from_events(events, state)
@@ -453,6 +504,11 @@ async def handle_message(
     life_sim.schedule_auto_sim(chat.id)
 
     tier_key, tier_label = state.affection_tier()
+
+    # 好感度里程碑 → persona 演化(后台,append-only + 快照,每档一次)
+    shift = events.get("_tier_shift")
+    if shift and shift.get("direction") == "up":
+        evolution.schedule_evolution(chat.id, tier_key)
     result = {
         "role": "assistant",
         "content": "\n".join(replies),   # 向后兼容:单字段拼接
@@ -485,6 +541,8 @@ async def handle_message(
             "topic_seed": topic_seed or None,
             "schedule": schedule_block or None,
             "tools": tool_trace,
+            "guardrail": guard_info,
+            "notebook": notebook_block or None,
             "l1": {
                 "cherished": l1_dbg.cherished_ids,
                 "hot": l1_dbg.hot_ids,
@@ -556,6 +614,13 @@ async def handle_timer_fire(
     if not (topic or "").strip() and settings.life_sim_enabled:
         topic_seed = await life_sim.pick_seed(session, chat.id) or ""
 
+    boundary_block = ""
+    if settings.guardrail_enabled:
+        boundary_block = guardrail.render_boundary_block(persona)
+    notebook_block = ""
+    if settings.notes_enabled:
+        notebook_block = await notebook.render_block(session, chat.id)
+
     system_prompt = injector.render(
         state, persona, core_identity=core_identity,
         memory_block=memory_block, goal=chat.goal,
@@ -564,6 +629,7 @@ async def handle_timer_fire(
         allow_timer=False,   # 主动消息里不许再约闹钟,防止连环自触发
         schedule_block=schedule_block, topic_seed=topic_seed,
         allow_tools=settings.tools_enabled,
+        boundary_block=boundary_block, notebook_block=notebook_block,
     )
 
     messages = [{"role": "system", "content": system_prompt}] + working_turns
@@ -578,6 +644,11 @@ async def handle_timer_fire(
         raw = await client.chat(messages, model=MODEL_PRO, temperature=0.85, thinking=False)
     raw, _ = _extract_timer(raw)   # 就算模型不听话吐了 timer 标签,也剥掉不调度
     thinking, replies = _parse_generation(raw)
+
+    # 主动消息同样过守护层(它也是用户可见的)
+    thinking, replies, _, _guard = await _apply_guardrail(
+        persona, messages, raw, thinking, replies, None,
+    )
 
     await _persist_agent_replies(session, chat.id, replies, thinking, state)
     chat.affect = state.to_dict()

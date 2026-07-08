@@ -18,17 +18,27 @@
   就真的会在 5 分钟后主动来找你(后台隐藏 LLM 调用 + SSE 推送);
 - **好感度系统**(v0.2)—— 碧蓝航线式 0~200 长程刻度(50=陌生,100=恋人),
   跨会话积累,渗入修复门槛、冷淡阈值、耐心预算等各处动力学;
-- **工具协议 / 迭代记忆搜索**(v0.3)—— 生成端是有界 agent loop:她觉得"这事
+- **工具协议 / 迭代记忆搜索**(v0.2.2)—— 生成端是有界 agent loop:她觉得"这事
   好像聊过"就真的去翻记忆(`search_memory` 双轴向量 / `grep_memory` 原文精确),
   一次没中换措辞再搜;`set_timer` 取代标签;检索置信度低时提示她"先搜再答";
-- **生活模拟器 + 日程表 + 注意力转移**(v0.3)—— 她的线下生活由后台离线预生成,
+- **生活模拟器 + 日程表 + 注意力转移**(v0.2.2)—— 她的线下生活由后台离线预生成,
   **生成即正史**(写入 L3,细节只生成一次,之后靠检索复述,不会越编越露馅);
   话题变淡时(纯代码信号)递一条新鲜事当种子,像随口想起一样自然转移话题;
   作息表让她"活在自己的生活里"——半夜被消息吵醒会带睡意,闹钟撞上睡眠自动顺延;
-- **激素模拟**(v0.3)—— adrenaline(20min)/ oxytocin(3h)/ cortisol(20h)
+- **激素模拟**(v0.2.2)—— adrenaline(20min)/ oxytocin(3h)/ cortisol(20h)
   三个时间尺度的残留,全由动力学规则触发:吵完架第二天早上"还是不得劲";
-- **自我迭代地基**(v0.3)—— 核心人格数据化(`chats.core_identity`)+ 配置
-  append-only 版本快照/回滚,为将来开放模型自改基础设施铺路。
+- **自我迭代地基**(v0.2.2)—— 核心人格数据化(`chats.core_identity`)+ 配置
+  append-only 版本快照/回滚,为将来开放模型自改基础设施铺路;
+- **守护层**(v0.3)—— 防角色扮演崩坏的三段防御:输入侧试探标记(persona_attack)、
+  常驻【底线】块(第四面墙 + 能力边界:见不了面的事说成期许而非承诺)、输出侧
+  零-LLM 崩坏检测 + 一次隐藏纠正重生成——绝不向用户吐机械警告,也绝不失声;
+- **夜间代理 + 她的小本子**(v0.3)—— 她睡着后后台"睡前整理":当天对话蒸馏成
+  持久事实(kind=passage 的第一个生产者)、以她口吻写日记、自己排明天的日程;
+  小本子(write_note 随手记 + 日记)是 model-curated 记忆——自动 RAG 管海量召回,
+  自己写下的几行字管最要紧的事;
+- **好感度解锁 persona 演化**(v0.3)—— 升到 crush/lover/devoted/oath 档时,
+  她这个人也变一点(新称呼/新习惯/新的自我认知):append-only、每档一次、
+  应用前自动快照可回退——"自我迭代"地基上的第一个真实住户。
 
 > 铁律:**内容只存一份(L3)**;其它层只持 id。**进向量的文本是纯内容**,
 > tag / 时间 / 说话人一律作旁挂列,检索时当 `WHERE` 过滤。**热路径零 LLM**;
@@ -64,12 +74,16 @@
   conversation/schedule  ← 日程表:作息匹配 + L1【你的生活】编译(纯代码)
   conversation/life_sim  ← 生活模拟器:离线预生成她的线下事件(生成即正史)
   conversation/config_store ← 配置版本快照/回滚(自我迭代地基)
+  conversation/guardrail ← 守护层:persona_attack 标记 + 底线块 + 崩坏检测/纠正重生成
+  conversation/night_agent ← 夜间代理:蒸馏→passage / 日记 / 明日计划 / Dream
+  conversation/notebook  ← 她的小本子:write_note 随手记 + 日记(model-curated)
+  conversation/evolution ← 好感度里程碑 → persona 演化(append-only + 快照)
                                 │
                                 ▼
                     PostgreSQL + pgvector
             memories(主表 + content_vec + emotion_vec)
             tags / tag_aliases / chats / timer_pings
-            schedule_items / life_events / chat_revisions
+            schedule_items / life_events / chat_revisions / notes
 ```
 
 ### 三级记忆与里程碑映射
@@ -143,6 +157,8 @@ L1 检索命中、本轮打的 tag。
 | GET  | `/api/chats/{id}/timers` | 当前挂着的"过会儿来找他"闹钟 |
 | GET  | `/api/chats/{id}/schedule` | 她的日程表(作息 + 一次性安排) |
 | GET  | `/api/chats/{id}/life-events` | 生活模拟器生成的线下事件(含种子状态) |
+| GET  | `/api/chats/{id}/notes` | 她的小本子(日记 + 随手记) |
+| POST | `/api/chats/{id}/night-run` | 手动触发一次夜跑(测试用;平时她睡着后自动跑) |
 | GET  | `/api/chats/{id}/revisions` | 配置版本历史(persona/core_identity/goal 快照) |
 | POST | `/api/chats/{id}/revisions/{rev}/rollback` | 回退到某个历史配置(回退本身也留快照) |
 | POST | `/api/chats/{id}/retrieve` | 双轴检索内省(`axis=content\|emotion\|both`) |
@@ -185,10 +201,20 @@ pytest -q
 - `tests/test_injector_blocks.py` —— 注入器区块结构回归:set_timer 必须独立成块
   (带"什么时候必须调用"清单 + 因果重锤),不许塞进【主动回忆】;工具关闭时
   退回 `<timer>` 标签块。实盘教训:降级成子弹点会让定时器合规率掉到 1/3。
+  0.3.0 增:【底线】紧跟关系框架、小本子/随手记按开关注入、write_note spec 门控。
+- `tests/test_guardrail.py` —— 崩坏检测宁漏勿误:第一人称自曝/助手腔/代码栅栏命中;
+  聊AI话题、引述("你说我是机器人")、否认("我不是AI")不命中;底线块三线防御齐全;
+  纠正注入是导演递条不是告警腔;extractor 的 persona_attack 校验。
+- `tests/test_night_evolution.py` —— 夜间载荷清洗(先校验后封顶,坏条目不挤掉好条目;
+  非法 HH:MM/越界星期丢弃;日记判空截断);plan_due_ms 落在明天;演化提案校验
+  (60字上限/换行清洗/空提案不应用);apply append-only(名字永不动);
+  低档不在解锁表。
 
 ### 当前验证状态
 
-- ✅ 88 个单测通过(45 + 0.2.2 新增 33 + 修复回归 5 + 解析容错 5),离线 < 1s
+- ✅ 112 个单测通过(88 + 0.3.0 新增 24:守护层/夜间载荷/演化门控/注入器新块),离线 < 1s
+- ⚠️ 0.3.0 的守护层重生成、夜间代理、persona 演化尚未跑真实 DeepSeek 端到端
+  (各自都有独立降级路径:守护失败发原文、夜跑单步失败不拖垮整晚、演化失败静默)。
 - ✅ **0.2.0 完整端到端已验证**(Postgres via docker + 真实 DeepSeek/bge-m3):
   多消息连发(clingy 报喜连发 3 条);时间感知(她会抱怨"说好2分钟结果半小时");
   定时器自然闭环(她自发挂 `<timer minutes="1">` → 调度器到点 → 隐藏 LLM 调用

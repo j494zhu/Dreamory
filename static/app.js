@@ -171,6 +171,9 @@ function renderDebug(d) {
   $("#dbg-seed").textContent = d.topic_seed
     ? "🌱 种子: " + d.topic_seed
     : `🌱 无话题种子 (dull_streak=${d.dull_streak ?? 0})`;
+  $("#dbg-guard").textContent = d.guardrail
+    ? `🛡 守护触发: ${(d.guardrail.triggered || []).join("、")} → 重生成${d.guardrail.clean_after_retry ? "已修复" : "仍有残留(照发)"}`
+    : "🛡 守护未触发";
   const toolsUl = $("#dbg-tools");
   toolsUl.innerHTML = "";
   (d.tools || []).forEach((t) => {
