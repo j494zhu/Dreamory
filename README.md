@@ -228,6 +228,9 @@ pytest -q
 ### 当前验证状态
 
 - ✅ 120 个单测通过(112 + 0.4.0 新增 8),离线 < 1s
+- ✅ **0.4.0 端到端已验证**(DeepSeek 实盘):聊 3 轮后 affect-history 返回 3 条
+  快照且前端曲线渲染正常;新对话体检 score=90(命中 tag_monoculture,冷启动
+  种子词表覆盖率高属预期);night-run report 携带 health 字段。
 - ⚠️ 多进程注记:后台任务与定时器已跨进程安全;SSE EventBus 仍是进程内的,
   多 worker 下主动消息可能推到没有订阅者的进程——消息本体在 L3,刷新即见
   (符合"缓存可丢"铁律),需要实时跨进程推送时再上 Redis pub/sub。
