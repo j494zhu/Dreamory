@@ -61,11 +61,14 @@ class OpenLoop:
 
 @dataclass
 class Grievance:
-    """已沉淀的旧账。平时不发作,在 conflict / 相关话题被触发时注入。"""
+    """已沉淀的旧账。平时不发作,在 conflict / 相关话题被触发时注入。
+    不随时间消失,但可以被和解(resolved):他带着歉意直面这件事、过了修复门槛,
+    这一页才翻篇 —— 见 dynamics.apply_events 规则 6。"""
     id: str
     content: str
     weight: int
     resolved: bool = False
+    touches: int = 0   # 他为这本旧账真心示好过几次(保底和解的计数,防"永远哄不好")
 
 
 @dataclass
@@ -131,3 +134,7 @@ class AffectState:
 
     def find_loop(self, loop_id: str) -> OpenLoop | None:
         return next((l for l in self.open_loops if l.id == loop_id), None)
+
+    def find_grievance(self, gid: str) -> "Grievance | None":
+        """只找还没翻篇的旧账(resolved 的不再参与任何动力学)。"""
+        return next((g for g in self.grievances if g.id == gid and not g.resolved), None)

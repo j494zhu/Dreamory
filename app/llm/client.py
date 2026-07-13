@@ -80,6 +80,7 @@ async def chat_tools(
     temperature: float = 0.7,
     max_tokens: int | None = None,
     thinking: bool | None = None,
+    reasoning_effort: str | None = None,
     tool_choice: str = "auto",
 ):
     """One completion round with function-calling enabled.
@@ -98,7 +99,7 @@ async def chat_tools(
     }
     if max_tokens:
         kwargs["max_tokens"] = max_tokens
-    body = _thinking_body(thinking, None)
+    body = _thinking_body(thinking, reasoning_effort)
     if body:
         kwargs["extra_body"] = body
 

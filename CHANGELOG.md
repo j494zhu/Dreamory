@@ -5,7 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.1] - 2026-07-13
+
+### Added
+
+- 新预设 `luna`(星渊):secure 亲缘的"理性温柔大姐姐"参数化(第 8 个预设,
+  anxiety 0.1 / insight 0.65 / 起点 120 心动档),前端建卡下拉同步。
+- **旧账和解回路**:`Grievance.resolved` 此前是个只读桩(6 处读、0 处写),旧账一旦
+  沉淀永远无法翻篇。现在他带着歉意直面那件事(extractor:
+  `topic_relates_to_grievance_id` + `is_repair_attempt`)且 security 过修复门槛
+  (复用 `repair_threshold`:回避型难翻篇、感情深易心软、激素调制)→ 和解:
+  好感 +2.0(与真心和好同级)、催产素余韵、皮质醇落地(对称冲销沉淀时的 +0.10)。
+  心结太深哄不动时,对同一本旧账真心示好满 3 次保底翻篇(打折奖励,与修复的
+  "直男后门"同构,防"永远哄不好"死锁)。`Grievance` 新增 `touches` 计数,
+  旧存档无该字段可直接加载。
+- **轻回路自然遗忘**:weight<3 的挂起回路沉不成旧账(原设计),但此前会永远留在
+  `open_loops` 里逐轮注入——鸡毛蒜皮不进旧账,却以【挂起回路】的形式无限碎碎念。
+  现在熬过 2 个会话自然淡忘:不沉旧账、不掉好感、不再挂心。
+
+### Fixed
+
+- **自动检索相关性下限**(L1 底噪根修):`retrieval.retrieve()` 是纯 kNN top-K,
+  没有绝对分数下限——新对话里检索池只剩生活正史时,0.4x 的无关命中(冰淇淋/花店/
+  食堂)全数进 L1,还被记热度、逐轮自我强化爬向 L2。0.2.2 的 `SEARCH_MIN_SCORE`
+  只加在了工具路径,自动路径漏了。现在下限收口进 `retrieve()` 本身
+  (`RETRIEVAL_MIN_SCORE=0.50`,比 goal 偏置前的裸分数,过滤后才记热度);
+  `life_event` 用更高线(`RETRIEVAL_MIN_SCORE_LIFE=0.60`):随口想起生活琐事归
+  话题种子通道,只有真聊到那件事才该被自动"想起"。工具路径(她的主动搜索)
+  关闭内置下限、保留自己的两段式话术("什么都没想起来"vs"没有更相关的了"),
+  过滤线与自动路径共用同一配置。"记忆很模糊"置信提示同步改比裸分数,
+  默认 0.45 → 0.55(原 0.45 低于新下限,永远不会触发)。`Hit` 新增 `raw` 字段,
+  debug 面板同时展示偏置分与裸分。
+- `chat_tools()` 不支持 `reasoning_effort`:签名里没有该参数,内部硬编码
+  `_thinking_body(thinking, None)`——工具循环这条生成主路径即使 `thinking=True`
+  也无法选 effort 档位(只有单发 `chat()` 支持)。现与 `chat()` 对称:新增同名
+  参数并转发。现网调用方均为 `thinking=False`,行为不变,属接口修复。
+- **内心独白泄漏防线**:DeepSeek 偶尔丢 `<thinking>`/`<reply>` 标签,解析器
+  "绝不失声"的兜底会把整段脑内剧场当回复发给用户(实盘样例:整段"他今天…
+  他需要的不是…"第三人称分析直达前端)。守护层新增 `detect_thinking_leak`
+  (零 LLM、宁漏勿误,两道闸:仅在 raw 无闭合 `<reply>` 即解析已退化时才检;
+  且消息以"他"开场 + 通篇"他"多于"你"),命中走既有的一次隐藏纠正重生成,
+  纠正注入追加"分析收进 thinking、reply 只留对他说的话"的教学。重试仍泄照发
+  (绝不失声),记进 debug。
+
+### Changed
+
+- 测试:161 passing(144 + 17 新增:旧账和解/轻回路遗忘 dynamics、
+  检索下限 `tests/test_retrieval_floor.py`、独白泄漏检测)。
+- 首次入库 `CLAUDE.md`(Claude Code 项目指引)与 `docs/backlog.md`
+  (实测笔记与待办,2026-07-11 整理)。
 
 ## [0.6.0] - 2026-07-08
 

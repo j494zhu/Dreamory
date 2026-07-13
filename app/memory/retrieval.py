@@ -25,14 +25,31 @@ from app.config import settings
 from app.llm import embeddings
 from app.memory import l3_store
 from app.memory.l2_hot import heat_tracker
-from app.models import Memory
+from app.models import Memory, MemoryKind
 
 
 @dataclass
 class Hit:
     memory: Memory
-    score: float
-    axis: str   # "content" | "emotion" | "both"
+    score: float   # 排序用分数(可能含 goal 偏置)
+    axis: str      # "content" | "emotion" | "both"
+    raw: float = 0.0   # 裸相似度(goal 偏置前)——下限过滤与置信度门都用它
+
+
+def apply_score_floor(hits: list[Hit], *, min_score: float,
+                      life_min_score: float) -> list[Hit]:
+    """绝对相关性下限(纯函数,可单测)。用裸分数比较,life_event 用更高的线
+    (生活琐事有话题种子这条专用通道,只有真聊到那件事才该被自动想起)。
+    min_score <= 0 时整体关闭 —— 工具路径的主动搜索自己决定怎么过滤。"""
+    if min_score <= 0:
+        return hits
+    kept = []
+    for h in hits:
+        bar = max(min_score, life_min_score) \
+            if h.memory.kind == MemoryKind.life_event else min_score
+        if h.raw >= bar:
+            kept.append(h)
+    return kept
 
 
 def _cos(a, b) -> float:
@@ -56,6 +73,7 @@ async def retrieve(
     ts_min_ms: int | None = None,     # side-car time filter (tool-driven recall)
     ts_max_ms: int | None = None,
     record: bool = True,
+    min_score: float | None = None,   # None → settings 下限;0 → 关闭(工具路径)
 ) -> list[Hit]:
     k = top_k or settings.retrieval_top_k
     pool = max(k * 2, k + 4)          # over-fetch, then re-rank with goal bias
@@ -68,7 +86,7 @@ async def retrieve(
             tags_any=tags_any, exclude_ids=exclude_ids,
             ts_min_ms=ts_min_ms, ts_max_ms=ts_max_ms,
         ):
-            merged[mem.id] = Hit(mem, score, "content")
+            merged[mem.id] = Hit(mem, score, "content", raw=score)
 
     if axis in ("emotion", "both"):
         for mem, score in await l3_store.search_emotion(
@@ -78,12 +96,21 @@ async def retrieve(
         ):
             cur = merged.get(mem.id)
             if cur is None:
-                merged[mem.id] = Hit(mem, score, "emotion")
+                merged[mem.id] = Hit(mem, score, "emotion", raw=score)
             else:
                 cur.score = max(cur.score, score)
+                cur.raw = max(cur.raw, score)
                 cur.axis = "both"
 
     hits = list(merged.values())
+
+    # 绝对下限(goal 偏置前的裸分数):没有相关内容时,kNN 返回的是
+    # "最不不相关"的底噪——被过滤的命中不进 L1,也不记热度(否则垃圾命中
+    # 每轮涨热度,迟早爬进 L2 被钉死在 L1 里)。
+    floor = settings.retrieval_min_score if min_score is None else min_score
+    hits = apply_score_floor(
+        hits, min_score=floor, life_min_score=settings.retrieval_min_score_life,
+    )
 
     # conditional bias: nudge ranking toward the current goal -----------------
     if goal and hits:

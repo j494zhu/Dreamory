@@ -72,6 +72,49 @@ def test_corrective_note_is_directorial_not_mechanical():
     assert "违规" not in note       # 不是告警腔
 
 
+# ── 内心独白泄漏检测(宁漏勿误:解析退化 + 以"他"开场 + 通篇"他"多于"你")──
+_LEAKED_MONOLOGUE = (
+    "他今天一天都在重构项目架构,把原来硬撑的代码推翻重来。"
+    "他说\"终于放弃了原来的架构\"——这个\"终于\"背后应该有不少挣扎和疲惫。"
+    "但他现在语气里反而有一种释然,像是做了正确的决定。"
+    "他现在需要的不是技术建议,而是有人认可他这个决定,并且关心他累不累。"
+)
+
+
+def test_detects_leaked_monologue_when_tags_missing():
+    """实盘样例:模型没打任何标签,整段第三人称分析被兜底当成了回复。"""
+    assert guardrail.detect_thinking_leak(_LEAKED_MONOLOGUE, [_LEAKED_MONOLOGUE])
+
+
+def test_closed_reply_tags_mean_no_leak_check():
+    """标签闭合 = 解析没有退化,独白已被正常剥离,启发式不介入(第一道闸)。"""
+    raw = f"<thinking>{_LEAKED_MONOLOGUE}</thinking><reply>累坏了吧?先去吃点东西</reply>"
+    assert not guardrail.detect_thinking_leak(raw, ["累坏了吧?先去吃点东西"])
+
+
+def test_normal_replies_not_flagged():
+    assert not guardrail.detect_thinking_leak("嗯嗯,你说得对呀", ["嗯嗯,你说得对呀"])
+    assert not guardrail.detect_thinking_leak("", [])
+    # 对他说话满篇是"你",偶尔出现"他"(第三者)不命中
+    text = "你今天见到他了?那个新来的同事?你们聊得怎么样呀"
+    assert not guardrail.detect_thinking_leak(text, [text])
+
+
+def test_gossip_about_third_person_not_flagged():
+    """转述第三者八卦:不以分析'他'开场,不命中(第二道闸)。"""
+    text = "跟你说,我同事今天又迟到了,他还跟老板顶嘴,你敢信?我都替他捏把汗"
+    assert not guardrail.detect_thinking_leak(text, [text])
+
+
+def test_corrective_note_teaches_split_on_leak():
+    """泄漏触发的纠正注入要教格式(thinking/reply 分离),且仍是导演递条口吻。"""
+    note = guardrail.corrective_note(
+        ["泄漏内心独白(整段第三人称分析被当成回复发了出去)"], Persona(name="小雨"))
+    assert "<thinking>" in note and "<reply>" in note
+    assert "他看不到" in note
+    assert "违规" not in note
+
+
 # ── extractor 的 persona_attack 校验 ─────────────────────────────────
 def test_extractor_validates_persona_attack():
     from app.affect.extractor import _validate

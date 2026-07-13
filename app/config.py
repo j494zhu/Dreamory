@@ -70,8 +70,16 @@ class Settings(BaseSettings):
     # 关掉则退回 0.2.0 的单次生成 + <timer> 标签协议。
     tools_enabled: bool = Field(True, alias="TOOLS_ENABLED")
     tool_max_rounds: int = Field(3, alias="TOOL_MAX_ROUNDS")   # 工具往返上限,超过强制作答
-    # 自动检索 top1 分数低于此值 → 注入"记忆很模糊,可以主动翻"的提示
-    retrieval_confidence: float = Field(0.45, alias="RETRIEVAL_CONFIDENCE")
+    # 自动检索 top1 裸分数(goal 偏置前)低于此值 → 注入"记忆很模糊,可以主动翻"的提示。
+    # 需要 > RETRIEVAL_MIN_SCORE,否则永远不触发(过滤后幸存者都在下限之上)。
+    retrieval_confidence: float = Field(0.55, alias="RETRIEVAL_CONFIDENCE")
+    # 自动检索的绝对相关性下限(裸分数)。kNN top-K 永远会凑满 K 条——没有下限,
+    # 池子里没有相关内容时"最不不相关"的底噪照样进 L1、照样涨热度。
+    # bge-m3 上两段无关中文闲聊约 0.35~0.5,真相关通常 0.55+。
+    retrieval_min_score: float = Field(0.50, alias="RETRIEVAL_MIN_SCORE")
+    # life_event(生活正史)在自动检索里要求更高的分数线:随口想起生活琐事
+    # 归话题种子通道管;只有他真的聊到那件事(高相关)才该被自动"想起来"。
+    retrieval_min_score_life: float = Field(0.60, alias="RETRIEVAL_MIN_SCORE_LIFE")
 
     # ── Life sim(生活模拟器:离线预生成她的线下生活)───────────────
     life_sim_enabled: bool = Field(True, alias="LIFE_SIM_ENABLED")

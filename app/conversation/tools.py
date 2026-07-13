@@ -23,10 +23,11 @@ from app.memory import l3_store, retrieval
 from app.models import Memory, MemoryKind, Speaker, TimerPing, now_ms
 
 MAX_HITS_PER_CALL = 6
-# search_memory 结果的相关性下限。没有它,exclude_ids 排掉真命中之后,
-# 后续搜索会把池子里剩下的低分"填充记忆"当成果喂回去,模型误以为还有料可挖,
-# 把轮数烧在冗余检索上。低于下限 → 明确告知"没有更相关的了",让她停手作答。
-SEARCH_MIN_SCORE = 0.40
+# search_memory 结果的相关性下限(与自动检索共用 RETRIEVAL_MIN_SCORE,比裸分数)。
+# 没有它,exclude_ids 排掉真命中之后,后续搜索会把池子里剩下的低分"填充记忆"
+# 当成果喂回去,模型误以为还有料可挖,把轮数烧在冗余检索上。
+# 注意:工具路径调 retrieve 时关闭其内置下限(min_score=0),在这里自己过滤——
+# 为的是区分"什么都没想起来(可以换措辞再试)"和"有但都不相关(停手作答)"两种话术。
 
 
 # ── 工具 schema ───────────────────────────────────────────────────────
@@ -161,8 +162,8 @@ def _days_range(args: dict) -> tuple[int | None, int | None]:
 
 
 def _relevant(hits: list) -> list:
-    """按相关性下限过滤(纯函数,可单测)。"""
-    return [h for h in hits if h.score >= SEARCH_MIN_SCORE]
+    """按相关性下限过滤(纯函数,可单测)。用裸分数,goal 偏置不算相关性。"""
+    return [h for h in hits if h.raw >= settings.retrieval_min_score]
 
 
 async def _do_search(session: AsyncSession, chat, args: dict,
@@ -177,6 +178,7 @@ async def _do_search(session: AsyncSession, chat, args: dict,
         session, query=query, chat_id=chat.id, top_k=MAX_HITS_PER_CALL,
         axis=axis, goal=chat.goal, exclude_ids=exclude_ids,
         ts_min_ms=ts_min, ts_max_ms=ts_max,
+        min_score=0.0,   # 主动搜索不预过滤:两段式话术需要看到低分命中(见顶部注释)
     )
     if not hits:
         return ToolOutcome("(什么都没想起来 —— 可以换个说法/换 axis 再试,或者承认记不清)")

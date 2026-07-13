@@ -269,7 +269,8 @@ async def _apply_guardrail(
     返回 (thinking, replies, timer_req, guard_info|None)。"""
     if not settings.guardrail_enabled:
         return thinking, replies, timer_req, None
-    reasons = guardrail.detect_break(replies)
+    reasons = guardrail.detect_break(replies) \
+        + guardrail.detect_thinking_leak(raw_clean, replies)
     if not reasons:
         return thinking, replies, timer_req, None
     try:
@@ -281,7 +282,8 @@ async def _apply_guardrail(
         raw2, timer2 = _extract_timer(raw2)
         thinking2, replies2 = _parse_generation(raw2)
         if replies2:
-            still = guardrail.detect_break(replies2)
+            still = guardrail.detect_break(replies2) \
+                + guardrail.detect_thinking_leak(raw2, replies2)
             info = {"triggered": reasons, "clean_after_retry": not still}
             return thinking2, replies2, (timer_req or timer2), info
     except Exception:  # noqa: BLE001 — 守护自身失败就发原文,绝不失声
@@ -455,9 +457,12 @@ async def handle_message(
     # 话题种子:代码决定何时转,事件池提供素材,LLM 只决定怎么说
     topic_seed = await _maybe_topic_seed(session, chat, state)
 
-    # 检索置信度:自动想起的东西很模糊 → 提醒她可以主动去翻(工具开启时才有意义)
+    # 检索置信度:自动想起的东西很模糊 → 提醒她可以主动去翻(工具开启时才有意义)。
+    # 比裸分数(goal 偏置是排序手段,不该把模糊记忆抬过置信线);
+    # 下限过滤后一无所剩也算"很模糊"。
     memory_hint = ""
-    if settings.tools_enabled and (not hits or hits[0].score < settings.retrieval_confidence):
+    top_raw = max((h.raw for h in hits), default=0.0)
+    if settings.tools_enabled and top_raw < settings.retrieval_confidence:
         memory_hint = (
             "(提示:这一轮自动想起的内容很少或很模糊——如果他说的事你没印象,"
             "先搜一下再回,别不懂装懂,也别凭空编。)"
@@ -583,7 +588,8 @@ async def handle_message(
                 "cherished": l1_dbg.cherished_ids,
                 "hot": l1_dbg.hot_ids,
                 "retrieved": [
-                    {"content": h.memory.content[:60], "score": round(h.score, 3), "axis": h.axis}
+                    {"content": h.memory.content[:60], "score": round(h.score, 3),
+                     "raw": round(h.raw, 3), "axis": h.axis}
                     for h in hits
                 ],
                 "dropped": l1_dbg.dropped_ids,
