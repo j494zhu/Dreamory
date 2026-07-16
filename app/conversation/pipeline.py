@@ -44,7 +44,7 @@ from app.affect import dynamics, extractor, injector, narrative
 from app.affect.persona import PRESETS, Persona
 from app.affect.state import AffectState
 from app.config import settings
-from app.conversation import evolution, guardrail, life_sim, notebook, timeline, tools
+from app.conversation import evolution, guardrail, life_sim, notebook, timeline, tools, turnlog
 from app.conversation import schedule as sched
 from app.conversation.identity import build_core_identity
 from app.llm import client
@@ -64,6 +64,9 @@ _TIMER_RE = re.compile(r'<timer\s+minutes\s*=\s*"?(\d+)"?\s*>(.*?)</timer>', re.
 _UNCLOSED_THINKING_RE = re.compile(r"<thinking>(.*?)(?=<reply>|$)", re.S | re.I)
 _REPLY_OPEN_RE = re.compile(r"<reply>(.*?)(?=<reply>|<thinking>|</reply>|$)", re.S | re.I)
 _STRAY_TAG_RE = re.compile(r"</?(?:reply|thinking)\s*>", re.I)
+# 孤儿闭合标签:模型丢了 <thinking> 开标签,只吐 "…独白…</thinking><reply>…"。
+# 0.6.1 实盘教训(星渊灵犀样本):这种形态下独白会被并进回复直达用户。
+_THINKING_CLOSE_RE = re.compile(r"</thinking\s*>", re.I)
 
 MAX_REPLIES_PER_TURN = 4   # 连发上限,和注入器里的口径一致
 
@@ -78,9 +81,15 @@ def _parse_generation(raw: str) -> tuple[str, list[str]]:
         body = _THINKING_RE.sub("", raw)
     else:
         um = _UNCLOSED_THINKING_RE.search(raw)
+        cm = _THINKING_CLOSE_RE.search(raw)
+        first_reply = raw.lower().find("<reply>")
         if um:
             thinking = um.group(1).strip()
             body = raw[:um.start()] + raw[um.end():]
+        elif cm and (first_reply == -1 or cm.start() < first_reply):
+            # 只有 </thinking> 没有开标签:闭合点之前的内容全是独白,绝不并进回复
+            thinking = _STRAY_TAG_RE.sub("", raw[:cm.start()]).strip()
+            body = raw[cm.end():]
         else:
             thinking, body = "", raw
 
@@ -533,9 +542,20 @@ async def handle_message(
         ))
         timer_scheduled = timer_req
 
-    # 8. save affect + timeline snapshot --------------------------------------
+    # 8. save affect + timeline snapshot + 感知/决策日志 ----------------------
     chat.affect = state.to_dict()
     timeline.record(session, chat.id, state, source="message", events=events)
+    turn_log = None
+    if settings.turn_log_enabled:
+        turn_log = turnlog.record(
+            session, chat.id, turn=state.turn, mode=state.mode, source="message",
+            user_mem_id=user_mem.id, reply_mem_ids=[m.id for m in reply_mems],
+            events=events, trace=trace,
+            system_prompt=system_prompt,
+            store_full_prompt=settings.turn_log_full_prompt,
+            retrieved=turnlog.summarize_hits(hits),
+            tools=tool_trace, guard=guard_info,
+        )
     await session.commit()
 
     # 后台离线维护:回复已提交,趁机检查是否该做梦/补写生活(不阻塞本次响应)。
@@ -552,6 +572,8 @@ async def handle_message(
         "role": "assistant",
         "content": "\n".join(replies),   # 向后兼容:单字段拼接
         "messages": replies,             # 多消息:前端逐条展示
+        # 「这里不对劲」反馈按钮回指本轮日志
+        "turn_id": str(turn_log.id) if turn_log is not None else None,
     }
     if settings.debug_panel:
         result["debug"] = {
@@ -689,9 +711,10 @@ async def handle_timer_fire(
     )
 
     messages = [{"role": "system", "content": system_prompt}] + working_turns
+    tool_trace: list[dict] = []
     if settings.tools_enabled:
         l1_ids = {m.id for m in cherished} | {m.id for m in hot} | {h.memory.id for h in hits}
-        raw, _trace, _t = await _generate_with_tools(
+        raw, tool_trace, _t = await _generate_with_tools(
             session, chat, messages, allow_timer=False,   # specs 里不含 set_timer
             exclude_ids=working_ids | l1_ids,
             pending_timers=settings.timer_max_pending,    # 双保险:quota 已满
@@ -702,13 +725,23 @@ async def handle_timer_fire(
     thinking, replies = _parse_generation(raw)
 
     # 主动消息同样过守护层(它也是用户可见的)
-    thinking, replies, _, _guard = await _apply_guardrail(
+    thinking, replies, _, guard_info = await _apply_guardrail(
         persona, messages, raw, thinking, replies, None,
     )
 
-    await _persist_agent_replies(session, chat.id, replies, thinking, state)
+    reply_mems = await _persist_agent_replies(session, chat.id, replies, thinking, state)
     chat.affect = state.to_dict()
     timeline.record(session, chat.id, state, source="timer")
+    turn_log = None
+    if settings.turn_log_enabled:
+        turn_log = turnlog.record(
+            session, chat.id, turn=state.turn, mode=state.mode, source="timer",
+            reply_mem_ids=[m.id for m in reply_mems],
+            system_prompt=system_prompt,
+            store_full_prompt=settings.turn_log_full_prompt,
+            retrieved=turnlog.summarize_hits(hits),
+            tools=tool_trace, guard=guard_info,
+        )
     await session.flush()
 
     return {
@@ -718,4 +751,5 @@ async def handle_timer_fire(
         "mode": state.mode,
         "thinking": thinking if settings.debug_panel else "",
         "topic": topic,
+        "turn_id": str(turn_log.id) if turn_log is not None else None,
     }

@@ -1,13 +1,28 @@
 // Dreamory frontend — vanilla JS, talks to the FastAPI backend.
 const $ = (sel) => document.querySelector(sel);
+
+// ── 测试期访问控制:专属链接 /?chat=<id>&token=<key> ──────────
+// token 进 localStorage,后续请求带 X-Access-Token;SSE 只能走 query。
+const BOOT_PARAMS = new URLSearchParams(location.search);
+const TOKEN = (() => {
+  const t = BOOT_PARAMS.get("token");
+  if (t) localStorage.setItem("dreamory_token", t);
+  return localStorage.getItem("dreamory_token") || "";
+})();
+const authHeaders = () => (TOKEN ? { "X-Access-Token": TOKEN } : {});
+
 const api = {
-  async get(url) { return (await fetch(url)).json(); },
+  async get(url) {
+    const r = await fetch(url, { headers: authHeaders() });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    return r.json();
+  },
   async post(url, body) {
     const r = await fetch(url, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(body || {}),
     });
-    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
     return r.json();
   },
 };
@@ -20,9 +35,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const typingDelay = (text) => Math.min(400 + (text || "").length * 45, 2200);
 
 // ── Chats ───────────────────────────────────────────────
+let guestMode = false;   // chat 级钥匙:看不到全局列表,只能进自己那扇门
+
 async function loadChats() {
-  const chats = await api.get("/api/chats");
   const list = $("#chat-list");
+  let chats;
+  try {
+    chats = await api.get("/api/chats");
+    guestMode = false;
+  } catch {
+    // 401:持 chat 钥匙的测试者。藏掉列表和新建入口,专属链接直达。
+    guestMode = true;
+    list.innerHTML = "";
+    const btn = $("#new-chat-btn");
+    if (btn) btn.classList.add("hidden");
+    return;
+  }
   list.innerHTML = "";
   chats.forEach((c) => {
     const el = document.createElement("div");
@@ -61,12 +89,15 @@ async function openChat(id) {
 // ── SSE:她主动发来的消息(定时器到点)从这里进来 ──────────
 function subscribeEvents(id) {
   if (eventSource) { eventSource.close(); eventSource = null; }
-  eventSource = new EventSource(`/api/chats/${id}/events`);
+  // EventSource 不能带 header,token 走 query
+  const q = TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : "";
+  eventSource = new EventSource(`/api/chats/${id}/events${q}`);
   eventSource.onmessage = async (e) => {
     let payload;
     try { payload = JSON.parse(e.data); } catch { return; }
     if (payload.type !== "proactive" || payload.chat_id !== activeChat) return;
-    await playAgentMessages(payload.messages || []);
+    const lastEl = await playAgentMessages(payload.messages || []);
+    attachFlag(lastEl, payload.turn_id);
     if (payload.mode) setMode(payload.mode);
     if (payload.thinking) $("#dbg-thinking").textContent = payload.thinking;
     refreshTimerHint();
@@ -107,13 +138,36 @@ function addMessage(role, content, meta) {
 
 // 连发消息逐条播放:条与条之间显示"正在输入…",像真人打字的节奏
 async function playAgentMessages(msgs) {
+  let last = null;
   for (let i = 0; i < msgs.length; i++) {
     const typing = addMessage("agent", "…");
     typing.classList.add("typing");
     await sleep(i === 0 ? 250 : typingDelay(msgs[i]));
     typing.remove();
-    addMessage("agent", msgs[i]);
+    last = addMessage("agent", msgs[i]);
   }
+  return last;   // 「不对劲」旗标挂在最后一条上
+}
+
+// ── 「这里不对劲」:测试期一键反馈,落在本轮的感知/决策日志上 ──────────
+function attachFlag(msgEl, turnId) {
+  if (!msgEl || !turnId) return;
+  const btn = document.createElement("button");
+  btn.className = "flag-btn";
+  btn.title = "这轮回复不对劲?点一下记下来(可留一句原因)";
+  btn.textContent = "⚑";
+  btn.onclick = async (e) => {
+    e.stopPropagation();
+    if (btn.classList.contains("done")) return;
+    const note = prompt("哪里不对劲?(可留空直接记录)") ;
+    if (note === null) return;          // 用户取消
+    try {
+      await api.post(`/api/chats/${activeChat}/turns/${turnId}/flag`, { note });
+      btn.classList.add("done");
+      btn.textContent = "⚑ 已记下";
+    } catch (err) { btn.textContent = "⚑ 失败"; }
+  };
+  msgEl.appendChild(btn);
 }
 
 $("#composer").addEventListener("submit", async (e) => {
@@ -128,7 +182,8 @@ $("#composer").addEventListener("submit", async (e) => {
     const res = await api.post(`/api/chats/${activeChat}/messages`, { content: text });
     typing.remove();
     const msgs = (res.messages && res.messages.length) ? res.messages : [res.content];
-    await playAgentMessages(msgs);
+    const lastEl = await playAgentMessages(msgs);
+    attachFlag(lastEl, res.turn_id);
     if (res.debug) renderDebug(res.debug);
     refreshTimerHint();
     loadAffectChart();
@@ -351,6 +406,11 @@ $("#m-create").onclick = async () => {
   const chat = await api.post("/api/chats", body);
   $("#modal").classList.add("hidden");
   $("#m-goal").value = "";
+  // 测试期:新对话的专属链接(发给测试者;仅 admin 能看到这里)
+  if (chat.access_token) {
+    prompt("专属链接(复制发给测试者):",
+      `${location.origin}/?chat=${chat.id}&token=${chat.access_token}`);
+  }
   await openChat(chat.id);
 };
 
@@ -361,4 +421,11 @@ $("#m-create").onclick = async () => {
     $("#backend-badge").textContent = `embed: ${h.embedding_backend} · dream: ${h.dream_enabled ? "on" : "off"}`;
   } catch { $("#backend-badge").textContent = "backend offline"; }
   await loadChats();
+  if (guestMode) $("#backend-badge").textContent = "访客链接";
+  // 专属链接直达:/?chat=<id>&token=<key>
+  const direct = BOOT_PARAMS.get("chat");
+  if (direct) {
+    try { await openChat(direct); }
+    catch (e) { $("#chat-title").textContent = "链接无效或已过期"; }
+  }
 })();

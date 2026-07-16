@@ -70,3 +70,12 @@ async def init_db() -> None:
             text("ALTER TABLE timer_pings ADD COLUMN IF NOT EXISTS "
                  "loop_id VARCHAR(16)")
         )
+        # 0.6.1 升级:测试期访问控制(每 chat 一把钥匙)+ 给旧行补钥匙
+        await conn.execute(
+            text("ALTER TABLE chats ADD COLUMN IF NOT EXISTS access_token VARCHAR(48)")
+        )
+        await conn.execute(
+            text("UPDATE chats SET access_token = "
+                 "md5(random()::text || clock_timestamp()::text) "
+                 "WHERE access_token IS NULL")
+        )

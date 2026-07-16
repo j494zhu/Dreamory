@@ -42,6 +42,8 @@ class ChatOut(BaseModel):
     persona: dict
     affect: dict
     core_identity: str | None = None
+    # 该 chat 的钥匙(测试期专属链接用;能读到本对象说明请求方本就持有钥匙或是 admin)
+    access_token: str | None = None
 
 
 class RevisionOut(BaseModel):
@@ -67,7 +69,12 @@ class MessageOut(BaseModel):
     role: str
     content: str                       # 向后兼容:多条消息用 \n 拼接
     messages: list[str] = []           # 连发消息,前端逐条渲染
+    turn_id: str | None = None         # 本轮感知/决策日志 id(「不对劲」反馈回指)
     debug: dict | None = None
+
+
+class TurnFlagIn(BaseModel):
+    note: str = ""                     # 可选的一句话说明(哪里不对劲)
 
 
 class MemoryOut(BaseModel):

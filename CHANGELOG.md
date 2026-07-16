@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-07-14
+
+小规模上线测试(同学/朋友)的地基版本:目标是"能安全地发链接给别人用,
+并把测试期的每一轮感知/决策都留成可事后审阅的数据"。
+
+### Added
+
+- **感知/决策日志(`turn_logs`)**:`affect_snapshots` 记"状态变成了什么",这张表
+  记"为什么"——每轮落一行:extractor 完整分类(+新增 `confidence` 单列)、
+  dynamics 触发的规则 trace、注入块标题清单(全文按 `TURN_LOG_FULL_PROMPT` 选存)、
+  检索命中摘要(id+双分数+截断)、工具调用、guardrail 介入记录。遵守铁律 1:
+  消息内容不二存,只存 L3 memory id,审计接口读取时 join。
+  `GET /api/chats/{id}/turns`(`?flagged=true` / `?low_confidence=true` 过滤),
+  误判率审计的主接口。新模块 `app/conversation/turnlog.py`。
+- **「这里不对劲」一键反馈**:每轮她的最后一条消息悬停出现 ⚑,点击(可留一句原因)
+  → `POST /api/chats/{id}/turns/{turn_id}/flag`,落在本轮日志上。测试期最便宜的
+  高信号反馈通道;主动消息(SSE)同样支持。
+- **测试期访问控制(不做用户系统,做"每 chat 一把钥匙")**:`ADMIN_TOKEN` 为空时
+  鉴权整体关闭(本地开发行为不变);设置后 admin 全通,每个 chat 的 `access_token`
+  (建 chat 时生成)只开自己那扇门——测试者拿到 `/?chat=<id>&token=<key>` 专属链接,
+  彼此隔离;列出/新建 chat、memory/Dream 等全局端点仅认 admin。guard 以 router 级
+  依赖挂载(`app/auth.py`),SSE 走 query token。前端:token 进 localStorage、
+  访客模式藏侧栏、admin 建卡后弹出可复制的专属链接。
+- **每日消息上限**(`DAILY_MESSAGE_LIMIT`,0=不限):每 chat 滚动 24h 的用户消息数
+  成本闸,超限返回 429。
+- extractor 新增 `confidence: high|low` 输出(他的消息带反讽/玩笑等歧义时给 low):
+  当前只记录(debug 面板 + turn_logs),不改变 dynamics 行为——先积累误判审计数据,
+  后续版本再决定低置信是否软化规则。抽取失败降级的中性事件标 low。
+
+### Changed
+
+- **extractor 默认模型 flash → pro**(`EXTRACTOR_MODEL=pro|flash|<模型id>`):
+  抽取是全管线最脆弱的一环(单条消息的语用分类),误判会被 dynamics 不打折地执行;
+  flash 省的钱远小于误判的代价(实测成本可接受,见 docs/backlog)。
+- **连发分句改为代码按状态决定**(此前【输出格式】只有一段静态说明,实测触发率
+  极低):`injector._burst_directive` —— arousal>0.55 或 adrenaline>0.5 → 明确要求
+  拆 2~4 条短消息;warm → 鼓励 2~3 条;withdrawn → 只发一条绝不连发;平常默认一条。
+  "代码决定何时,LLM 决定怎么说"。输出格式块同时改为硬性要求"以 <thinking> 开头、
+  标签必须闭合、分析(用'他'指代他的话)只许出现在 thinking 里"。
+
+### Fixed
+
+- **内心独白泄漏防线补盲区**(0.6.1 的检测在标签"看似闭合"时直接放行):
+  实盘丢标签的另一形态是模型把整段独白塞进第一个闭合 `<reply>` 内部。现在闭合
+  形态也检第一条(阈值更严:'他'≥4 且 ≥2×'你',宁漏勿误)。
+  解析器同时新增"孤儿闭合标签"分支:`…独白…</thinking><reply>…` (丢了开标签)
+  此前独白会并进回复直达用户,现在正确剥进 thinking。
+- 主动消息(`handle_timer_fire`)此前丢弃工具调用 trace 与 guardrail 结果,
+  现与主链路一致记入 turn_logs。
+
+### Ops
+
+- 建库升级(`init_db` 幂等自动完成):新表 `turn_logs`;`chats` 补 `access_token`
+  列并为旧行生成钥匙。
+- 测试:183 passing(171 + 12 新增:泄漏形态 b / 孤儿标签解析 / 连发指令 /
+  turnlog / auth)。
+
 ## [0.6.1] - 2026-07-13
 
 ### Added

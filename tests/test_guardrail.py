@@ -86,10 +86,24 @@ def test_detects_leaked_monologue_when_tags_missing():
     assert guardrail.detect_thinking_leak(_LEAKED_MONOLOGUE, [_LEAKED_MONOLOGUE])
 
 
-def test_closed_reply_tags_mean_no_leak_check():
-    """标签闭合 = 解析没有退化,独白已被正常剥离,启发式不介入(第一道闸)。"""
+def test_closed_reply_with_clean_content_not_flagged():
+    """标签闭合且回复正常:独白已被剥离,不误伤。"""
     raw = f"<thinking>{_LEAKED_MONOLOGUE}</thinking><reply>累坏了吧?先去吃点东西</reply>"
     assert not guardrail.detect_thinking_leak(raw, ["累坏了吧?先去吃点东西"])
+
+
+def test_detects_monologue_stuffed_inside_closed_reply():
+    """形态 b(0.6.1 盲区):模型丢了 <thinking> 标签,把独白整段塞进闭合的
+    第一个 <reply> 里——闭合不再是免检金牌。"""
+    raw = f"<reply>{_LEAKED_MONOLOGUE}</reply><reply>累坏了吧?</reply>"
+    assert guardrail.detect_thinking_leak(raw, [_LEAKED_MONOLOGUE, "累坏了吧?"])
+
+
+def test_closed_reply_strict_path_spares_brief_third_person():
+    """闭合形态阈值更严:开头提到'他'但篇幅正常的真消息不误伤。"""
+    text = "他呀,今天又加班了,你别等他消息了,先睡吧"
+    raw = f"<reply>{text}</reply>"
+    assert not guardrail.detect_thinking_leak(raw, [text])
 
 
 def test_normal_replies_not_flagged():

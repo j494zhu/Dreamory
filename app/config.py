@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # pro = generation + Dream naming; flash = cheap event extraction.
     deepseek_model_pro: str = Field("deepseek-v4-pro", alias="DEEPSEEK_MODEL_PRO")
     deepseek_model_flash: str = Field("deepseek-v4-flash", alias="DEEPSEEK_MODEL_FLASH")
+    # 事件抽取用哪个模型:"pro" / "flash" / 任意显式模型 id。
+    # 0.6.1 起默认 pro——抽取是全管线最脆弱的一环(单条消息的语用分类,反讽/玩笑
+    # 极易误判),而误判会被 dynamics 不打折地执行;flash 省的钱远小于误判的代价。
+    extractor_model: str = Field("pro", alias="EXTRACTOR_MODEL")
 
     # ── Embeddings ────────────────────────────────────────────────
     # "api"      -> bge-m3 over an OpenAI-compatible HTTP API (e.g. SiliconFlow)
@@ -43,6 +47,16 @@ class Settings(BaseSettings):
     app_host: str = Field("127.0.0.1", alias="APP_HOST")
     app_port: int = Field(8000, alias="APP_PORT")
     debug_panel: bool = Field(True, alias="DEBUG_PANEL")
+    # 感知/决策日志(0.6.1,测试期审计):每轮落一行 turn_logs。
+    turn_log_enabled: bool = Field(True, alias="TURN_LOG_ENABLED")
+    # 连完整 system prompt 一起存(体积大,深度排查时才开)
+    turn_log_full_prompt: bool = Field(False, alias="TURN_LOG_FULL_PROMPT")
+    # ── 测试期访问控制(0.6.1)────────────────────────────────────
+    # 空 = 鉴权关闭(本地开发)。设置后:admin 全通;每个 chat 的 access_token
+    # 只开自己那扇门(专属链接 /?chat=<id>&token=<access_token>)。
+    admin_token: str = Field("", alias="ADMIN_TOKEN")
+    # 每个 chat 24 小时内的用户消息上限(成本闸,0 = 不限)
+    daily_message_limit: int = Field(0, alias="DAILY_MESSAGE_LIMIT")
 
     # ── Memory tuning ─────────────────────────────────────────────
     working_memory_k: int = Field(10, alias="WORKING_MEMORY_K")

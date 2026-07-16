@@ -81,6 +81,43 @@ def test_write_note_taught_only_with_tools():
     assert _find(_blocks(allow_tools=False, allow_notes=True), "【随手记】") is None
 
 
+# ── 0.6.1:连发分句改为代码按状态决定(此前静态说明实测几乎不触发)────────
+def _format_block(state) -> str:
+    out = render(state, Persona())
+    return next(b for b in out.split("\n\n") if b.startswith("【输出格式】"))
+
+
+def test_burst_directive_neutral_defaults_to_single():
+    state = AffectState.fresh(Persona())
+    assert "一条就够" in _format_block(state)
+
+
+def test_burst_directive_high_arousal_demands_split():
+    state = AffectState.fresh(Persona())
+    state.arousal = 0.8
+    block = _format_block(state)
+    assert "2~4 条" in block and "拆" in block
+
+
+def test_burst_directive_warm_encourages_split():
+    state = AffectState.fresh(Persona())
+    state.mode = "warm"
+    assert "2~3 条" in _format_block(state)
+
+
+def test_burst_directive_withdrawn_forbids_split():
+    state = AffectState.fresh(Persona())
+    state.mode = "withdrawn"
+    assert "绝不连发" in _format_block(state)
+
+
+def test_format_block_demands_closed_tags():
+    """0.6.1 防丢标签:输出格式块必须明确要求以 <thinking> 开头且标签闭合。"""
+    block = _format_block(AffectState.fresh(Persona()))
+    assert "以 <thinking> 开头" in block
+    assert "闭合" in block
+
+
 def test_write_note_spec_gated():
     from app.conversation import tools
 

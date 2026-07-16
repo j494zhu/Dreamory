@@ -130,7 +130,7 @@ def _aff_hit(state: AffectState, amount: float) -> None:
 def _hormone(state: AffectState, name: str, amount: float) -> None:
     setattr(state, name, min(1.0, getattr(state, name) + amount))
 
-
+# 好感度越高, 催产素, 越容易接受repair. 皮质醇越高, 越不容易接受repair.  由此计算出repair_threshold
 def repair_threshold(state: AffectState, persona: Persona) -> float:
     """修复被接受的 security 门槛。回避型更难哄;感情越深越容易心软;
     亲密余韵(oxytocin)让人容易心软,压力残留(cortisol)让人更难被哄。
@@ -140,7 +140,7 @@ def repair_threshold(state: AffectState, persona: Persona) -> float:
         * (1.0 + COR_REPAIR_HARDEN * state.cortisol)
     return REPAIR_ACCEPT_BASE * persona.avoidance * aff_factor * hormone_factor
 
-
+# 进入新的session以后, warm streak根据高感度, 会有一个更高的初始值. 
 def warm_streak_floor(affection: float) -> int:
     """新会话 warm_streak 不再一律清零:感情越深,重逢时的底色越暖。
     (对应旧注释"引入一个好感度系统,折算成可变的基础 warm_streak"。)"""
@@ -150,7 +150,7 @@ def warm_streak_floor(affection: float) -> int:
         return 1
     return 0
 
-
+# 好感度越高, patience耐心 越高. 
 def _patience_bonus(affection: float) -> int:
     """好感度折算的耐心加成:深爱的人,可忍受的敷衍多一些;失望透顶时耐心更薄。"""
     if affection >= 160:
@@ -236,10 +236,11 @@ def _escalate_old_loops(state: AffectState, now_s: float) -> None:
 
 def apply_events(state: AffectState, ev: dict, persona: Persona,
                  her_last_msg: str | None, his_msg: str) -> list[str]:
+    """ev 来源于 app/affect/extractor.py::extract() , 用 flash 模型完成离散分类. """
     """事件 → 状态。返回 trace(人话日志,调试用)。"""
-    trace = []
-    state.turn += 1
-    tier_before = affection_tier(state.affection)
+    trace = []                                          # 测试用, 记录所有触发的规则
+    state.turn += 1                                     # 全局计数器, 后面用来测量一个事件持续了几轮
+    tier_before = affection_tier(state.affection)       # 本轮加分扣分之前, 先保存好感度分层快照. 格式: (tier_key, 中文标签), 如("lover", "恋人")
 
     # ── 1. 他回应了挂起回路 → 关闭 + 安全感小幅修复 ────────────
     # 承诺兑现走分级奖励(v0.6):说到做到 > 迟到兑现 > 一般回路关闭。
@@ -247,14 +248,14 @@ def apply_events(state: AffectState, ev: dict, persona: Persona,
         loop = state.find_loop(ev["addresses_loop_id"])
         if loop:
             state.open_loops.remove(loop)
-            if loop.type == "commitment":
+            if loop.type == "commitment":               # 涨幅更大, 有激素触发. 
                 on_time = (loop.due_ms is None
                            or clock.now_ms() <= loop.due_ms + COMMITMENT_GRACE_H * 3600_000)
                 state.security = min(1.0, state.security + SEC_GAIN_PROMISE_KEPT)
                 _aff_gain(state, AFF_GAIN_PROMISE_KEPT if on_time else AFF_GAIN_PROMISE_LATE)
                 _hormone(state, "oxytocin", OXY_PROMISE_KEPT)   # 说话算数的踏实感
                 trace.append(f"承诺兑现({'准时' if on_time else '迟到但兑现了'}): {loop.content}")
-            else:
+            else:                                       # 涨幅更小, 没有激素触发. 只是普通的回路关闭
                 state.security = min(1.0, state.security + SEC_GAIN_LOOP_CLOSED)
                 _aff_gain(state, AFF_GAIN_LOOP_CLOSED)
                 trace.append(f"回路关闭: {loop.content}")
@@ -270,7 +271,7 @@ def apply_events(state: AffectState, ev: dict, persona: Persona,
         state.security = max(0.0, state.security - SEC_HIT_TURN_AWAY * persona.anxiety)
         state.warm_streak = 0
         _aff_hit(state, AFF_HIT_TURN_AWAY * persona.anxiety)
-        if bid in ("seeking_comfort", "venting"):
+        if bid in ("seeking_comfort", "venting"): # ("寻求安慰", "抱怨")
             _hormone(state, "cortisol", COR_COMFORT_IGNORED)  # 委屈憋着,压力残留
         weight = 3 if bid in ("seeking_comfort", "venting") else 2
         snippet = (her_last_msg or "")[:40]
@@ -438,12 +439,13 @@ def transition(state: AffectState, ev: dict, persona: Persona) -> list[str]:
             trace.append(f"模式 {old} → {m}({why})")
 
     resp = ev["his_response_type"]
-    pressure = state.loop_pressure()
+    pressure = state.loop_pressure() # pressure是当前挂起回路的 weight 总和
     # 感情越深,越能扛住挂起压力才关闭自己(锚点:affection=100 时系数 1.0)
-    aff_tolerance = 0.75 + 0.5 * state.affection / AFFECTION_MAX
+    aff_tolerance = 0.75 + 0.5 * state.affection / AFFECTION_MAX 
     withdraw_threshold = WITHDRAW_PRESSURE / max(persona.avoidance, 0.3) * aff_tolerance
 
     # 优先级从高到低:
+    # A. 被攻击
     if resp == "turn_against" and state.mode != "conflict":
         # 回避型受攻击倾向于冷掉而不是吵起来
         if persona.avoidance > 1.4 and persona.expressiveness < 0.8:
@@ -451,17 +453,20 @@ def transition(state: AffectState, ev: dict, persona: Persona) -> list[str]:
         else:
             goto("conflict", "被攻击性回应")
 
+    # B. 处于conflict, 修复或者停留
     elif state.mode == "conflict":
         if ev.get("_repair_accepted"):
             goto("repair_pending", "修复尝试被接受")
         # 否则停留(滞回:conflict 不会因为他换了话题就自动结束)
 
+    # C. 修复的考察期, 如果示好的话修复, 冷淡或者敷衍则回到conflict. 
     elif state.mode == "repair_pending":
         if resp == "turn_toward" or "affectionate" in ev["tone_flags"]:
             goto("neutral", "修复后他持续示好,回到正常")
         elif resp in ("turn_away",) or "dismissive" in ev["tone_flags"]:
             goto("conflict", "刚道完歉又敷衍,二次伤害")
 
+    # D. 能走到这里说明没有被攻击; 简单回复即可回到neutral; 冷漠则进入conflict. 
     elif state.mode == "withdrawn":
         if ev.get("_repair_accepted") or ev["addresses_loop_id"]:
             goto("neutral", "他发现/回应了她在意的事")
@@ -470,7 +475,8 @@ def transition(state: AffectState, ev: dict, persona: Persona) -> list[str]:
             goto("conflict", "冷淡期再次被无视,直接爆发(高表达型)")
         # 低表达型:继续沉默,模式不变
 
-    else:  # warm / neutral / probing
+    # E.  warm / neutral / probing
+    else:  
         if state.patience <= 0 or pressure >= withdraw_threshold:
             goto("withdrawn", f"耐心耗尽(patience={state.patience})或挂起压力过大(pressure={pressure})")
         elif state.security < PROBING_SECURITY and (

@@ -2,22 +2,23 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.affect.persona import PRESETS, Persona
 from app.affect.state import AffectState
 from app.config import settings
-from app.conversation import config_store, night_agent, notebook, pipeline, timeline
+from app.conversation import config_store, night_agent, notebook, pipeline, timeline, turnlog
 from app.conversation import schedule as sched
 from app.conversation.bus import event_bus, sse_format
 from app.db import SessionLocal, get_session
 from app.memory import l3_store
-from app.models import Chat, LifeEvent, Memory, MemoryKind, TimerPing
+from app.models import Chat, LifeEvent, Memory, MemoryKind, Speaker, TimerPing, now_ms
 from app.schemas import (
     ChatCreate,
     ChatOut,
@@ -27,6 +28,7 @@ from app.schemas import (
     MessageIn,
     MessageOut,
     RevisionOut,
+    TurnFlagIn,
 )
 
 router = APIRouter(prefix="/api/chats", tags=["chat"])
@@ -58,6 +60,7 @@ async def create_chat(body: ChatCreate, session: AsyncSession = Depends(get_sess
         persona=persona.to_dict(),
         affect=state.to_dict(),
         goal=body.goal,
+        access_token=secrets.token_urlsafe(18),   # 测试期专属链接的钥匙
     )
     session.add(chat)
     await session.flush()
@@ -68,7 +71,8 @@ async def create_chat(body: ChatCreate, session: AsyncSession = Depends(get_sess
     await session.refresh(chat)
     return ChatOut(id=chat.id, title=chat.title, goal=chat.goal,
                    persona=chat.persona, affect=chat.affect,
-                   core_identity=chat.core_identity)
+                   core_identity=chat.core_identity,
+                   access_token=chat.access_token)
 
 
 @router.get("", response_model=list[ChatSummary])
@@ -82,7 +86,8 @@ async def get_chat(chat_id: uuid.UUID, session: AsyncSession = Depends(get_sessi
     chat = await _get_chat(session, chat_id)
     return ChatOut(id=chat.id, title=chat.title, goal=chat.goal,
                    persona=chat.persona, affect=chat.affect,
-                   core_identity=chat.core_identity)
+                   core_identity=chat.core_identity,
+                   access_token=chat.access_token)
 
 
 @router.patch("/{chat_id}", response_model=ChatOut)
@@ -105,7 +110,8 @@ async def update_chat(chat_id: uuid.UUID, body: ChatUpdate,
     await session.refresh(chat)
     return ChatOut(id=chat.id, title=chat.title, goal=chat.goal,
                    persona=chat.persona, affect=chat.affect,
-                   core_identity=chat.core_identity)
+                   core_identity=chat.core_identity,
+                   access_token=chat.access_token)
 
 
 # ── 配置版本(自我迭代地基):历史 + 回退 ─────────────────────────────
@@ -129,7 +135,8 @@ async def rollback_revision(chat_id: uuid.UUID, rev: int,
     await session.refresh(chat)
     return ChatOut(id=chat.id, title=chat.title, goal=chat.goal,
                    persona=chat.persona, affect=chat.affect,
-                   core_identity=chat.core_identity)
+                   core_identity=chat.core_identity,
+                   access_token=chat.access_token)
 
 
 # ── 日程与生活(调试/前端提示用)──────────────────────────────────────
@@ -239,6 +246,17 @@ async def post_message(chat_id: uuid.UUID, body: MessageIn,
     chat = await _get_chat(session, chat_id)
     if not body.content.strip():
         raise HTTPException(400, "empty message")
+    # 每日消息上限(成本闸,测试期):滚动 24h 内该 chat 的用户消息数
+    if settings.daily_message_limit > 0:
+        sent = await session.scalar(
+            select(func.count()).select_from(Memory).where(
+                Memory.chat_id == chat_id,
+                Memory.speaker == Speaker.user,
+                Memory.ts_ms >= now_ms() - 86_400_000,
+            )
+        ) or 0
+        if sent >= settings.daily_message_limit:
+            raise HTTPException(429, "今天聊得够多啦,休息一下,明天再来找她吧")
     result = await pipeline.handle_message(session, chat, body.content.strip())
     return MessageOut(**result)
 
@@ -269,6 +287,32 @@ async def chat_events(chat_id: uuid.UUID):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ── 感知/决策日志(0.6.1,测试期审计)────────────────────────────────────
+@router.get("/{chat_id}/turns")
+async def get_turns(chat_id: uuid.UUID, limit: int = 100,
+                    flagged: bool = False, low_confidence: bool = False,
+                    session: AsyncSession = Depends(get_session)):
+    """每轮的感知/决策日志:extractor 分类 + dynamics trace + 注入块 + 工具 +
+    guardrail + 用户旗标。误判审计的主接口(?low_confidence=true 先看可疑轮)。"""
+    await _get_chat(session, chat_id)
+    rows = await turnlog.history(
+        session, chat_id, limit=limit,
+        flagged_only=flagged, low_confidence_only=low_confidence,
+    )
+    return [await turnlog.to_dict(session, r) for r in rows]
+
+
+@router.post("/{chat_id}/turns/{turn_id}/flag")
+async def flag_turn(chat_id: uuid.UUID, turn_id: uuid.UUID, body: TurnFlagIn,
+                    session: AsyncSession = Depends(get_session)):
+    """「这里不对劲」:测试期一键反馈,落在对应轮的日志上。"""
+    log = await turnlog.flag(session, chat_id, turn_id, note=body.note)
+    if log is None:
+        raise HTTPException(404, "turn not found")
+    await session.commit()
+    return {"flagged": str(log.id), "note": log.flag_note or None}
 
 
 @router.get("/{chat_id}/timers")

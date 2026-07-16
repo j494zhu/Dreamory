@@ -79,6 +79,31 @@ def test_parse_multiple_unclosed_replies_split():
     assert replies == ["第一句", "第二句"]
 
 
+def test_parse_orphan_thinking_close_tag_splits_monologue():
+    """孤儿闭合标签(0.6.1 实盘教训):模型丢了 <thinking> 开标签,
+    只吐 "…独白…</thinking><reply>…"。独白必须被剥进 thinking,绝不并进回复。"""
+    thinking, replies = pipeline._parse_generation(
+        "他终于肯说实话了,心里松了口气</thinking><reply>那你早说嘛</reply>"
+    )
+    assert thinking == "他终于肯说实话了,心里松了口气"
+    assert replies == ["那你早说嘛"]
+
+
+def test_parse_orphan_thinking_close_without_reply_tags():
+    """孤儿闭合标签 + 连 <reply> 都没有:闭合点之前是独白,之后才是回复。"""
+    thinking, replies = pipeline._parse_generation(
+        "他是不是在试探我</thinking>你今天怎么怪怪的"
+    )
+    assert thinking == "他是不是在试探我"
+    assert replies == ["你今天怎么怪怪的"]
+
+
+def test_parse_orphan_close_after_reply_is_ignored():
+    """</thinking> 出现在 <reply> 之后属于乱序噪声:不把回复误吞成独白。"""
+    _, replies = pipeline._parse_generation("<reply>晚安</reply></thinking>")
+    assert replies == ["晚安"]
+
+
 def test_parse_never_returns_bare_tags():
     for raw in ("<reply></reply>", "<thinking></thinking>", "<reply>", "<thinking>"):
         _, replies = pipeline._parse_generation(raw)

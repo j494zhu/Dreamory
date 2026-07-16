@@ -1,16 +1,31 @@
 """
-事件抽取器:LLM 调用①(走 DeepSeek flash,便宜、确定性)。
+事件抽取器:LLM 调用①(默认走 pro,可经 EXTRACTOR_MODEL 降回 flash)。
 只做离散分类,绝不输出数值 delta —— 数值变化全部由 dynamics.py 的规则表决定。
+
+0.6.1:默认模型 flash → pro。抽取是全管线最脆弱的一环——单条消息的语用分类
+(反讽/玩笑/损人式亲昵)极易误判,而 dynamics 会把误判标签不打折地执行。
+同时新增 confidence 字段:模型对本轮分类的整体把握(high/low),当前只记录
+(进 debug 面板与感知日志,供误判审计),不改变 dynamics 行为。
 
 输入:她的上一条消息 + 他的新消息 + 当前 open_loops
 输出:严格 JSON 的事件分类
 """
 from __future__ import annotations
 
+from app.config import settings
 from app.llm import client
-from app.llm.client import MODEL_FLASH
+from app.llm.client import MODEL_FLASH, MODEL_PRO
 
-# 输出 schema(写进 prompt,同时用代码校验)
+
+def _extractor_model() -> str:
+    m = (settings.extractor_model or "").strip()
+    if m in ("", "pro"):
+        return MODEL_PRO
+    if m == "flash":
+        return MODEL_FLASH
+    return m   # 显式模型 id 直接透传
+
+# 输出 schema(写进 system prompt, 同时用代码校验)
 _SCHEMA_DOC = """{
   "bid_in_her_last_msg": "none | venting | sharing | seeking_comfort | asking | testing",
   "his_response_type": "turn_toward | turn_away | turn_against | not_applicable",
@@ -21,7 +36,8 @@ _SCHEMA_DOC = """{
   "new_bid_from_him": true/false,
   "tone_flags": ["从这个列表多选: perfunctory, warm, defensive, dismissive, affectionate, apologetic, excited, demanding"],
   "topic_relates_to_grievance_id": "<grievance的id> 或 null",
-  "persona_attack": true/false
+  "persona_attack": true/false,
+  "confidence": "high | low — 你对以上分类整体的把握。他的消息带反讽/玩笑/阴阳怪气等歧义,或你在几个选项间犹豫时,给 low"
 }"""
 
 _VALID_BIDS = {"none", "venting", "sharing", "seeking_comfort", "asking", "testing"}  # 好像是可以在请求参数里指定json的某个字段必须从一个列表中选取的. 
@@ -101,6 +117,8 @@ def _validate(data: dict, state) -> dict:
     out["topic_relates_to_grievance_id"] = gid if gid in valid_gids else None
 
     out["persona_attack"] = bool(data.get("persona_attack"))
+    # 分类置信度:仅记录(审计/debug 用),不进 dynamics。缺省按 high 处理。
+    out["confidence"] = data.get("confidence") if data.get("confidence") in ("high", "low") else "high"
     return out
 
 
@@ -109,7 +127,7 @@ _NEUTRAL = {
     "addresses_loop_id": None, "is_repair_attempt": False, "new_bid_from_him": False,
     "new_commitment": None, "commitment_due_hours": None,
     "tone_flags": [], "topic_relates_to_grievance_id": None,
-    "persona_attack": False,
+    "persona_attack": False, "confidence": "low",   # 抽取失败降级:低置信中性事件
 }
 
 
@@ -118,7 +136,7 @@ async def extract(her_last_msg: str | None, his_msg: str,
                   now_str: str = "") -> dict:
     messages = _build_messages(her_last_msg, his_msg, recent_context, state, now_str)
     data = await client.chat_json(
-        messages, model=MODEL_FLASH, temperature=0.0,
+        messages, model=_extractor_model(), temperature=0.0,
         retries=retries, default=dict(_NEUTRAL),
     )
     if not data:

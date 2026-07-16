@@ -9,11 +9,12 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
+from app.auth import access_guard
 from app.config import settings
 from app.conversation.night_agent import night_service
 from app.conversation.timer import timer_service
@@ -40,8 +41,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Dreamory", version=__version__, lifespan=lifespan)
 
-app.include_router(chat.router)
-app.include_router(memory.router)
+# 测试期访问控制(ADMIN_TOKEN 为空时 guard 直接放行,行为与 0.6.0 一致):
+# 带 chat_id 的路径认该 chat 的 access_token;全局端点(列表/新建/memory)仅认 admin。
+app.include_router(chat.router, dependencies=[Depends(access_guard)])
+app.include_router(memory.router, dependencies=[Depends(access_guard)])
 
 
 @app.get("/healthz")

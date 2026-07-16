@@ -18,6 +18,7 @@ STYLE_INJECT_PROB = 0.35
 
 # ── 各模式的行为指令模板 ────────────────────────────────────
 # {silent} 槽位由 expressiveness 决定填入"憋着"还是"说出来"
+# 将 mode 翻译成人话
 _MODE_DIRECTIVES = {
     "warm": (
         "你现在心情很好,对他很有好感。语气轻快,可以撒娇、调侃、主动开新话题,"
@@ -116,7 +117,7 @@ def _commitment_pressing(loop: OpenLoop) -> bool:
     return (loop.type == "commitment" and loop.due_ms is not None
             and loop.due_ms - clock.now_ms() < 2 * 3600_000)
 
-
+# 注入记忆. 包括挂起回路 和 临期承诺的额外提醒, 
 def _render_memory(state: AffectState) -> str:
     """关系记忆块:整个注入里信息密度最高的部分。"""
     parts = []
@@ -143,7 +144,7 @@ def _render_memory(state: AffectState) -> str:
         )
     return "\n".join(parts)
 
-
+# 随机注入口癖. 
 def _maybe_style(state: AffectState, persona: Persona) -> str:
     """口癖低频注入:只在心情好(warm/neutral)且低概率命中时提醒带上说话习惯。
     负面模式下由行为指令接管语气,不注入口癖(冷战/生气时不该俏皮)。"""
@@ -155,7 +156,32 @@ def _maybe_style(state: AffectState, persona: Persona) -> str:
         return ""
     return f"这条可以自然带上你平时的说话习惯:{persona.style}"
 
+# 连发分句的确定性门(0.6.1):此前只有一段静态说明("兴奋时适合连发"),
+# 实测触发率极低——模型面对 18 个区块的长 prompt,几乎总是选保守的单条长回复。
+# 改成代码按状态直接下指令:何时拆、拆几条由这里决定,LLM 只决定怎么说。
+BURST_AROUSAL_GATE = 0.55     # 情绪激活超过此值 → 明确要求拆碎连发
+BURST_ADRENALINE_GATE = 0.5   # 上头(吵架/狂喜)同样触发
 
+
+def _burst_directive(state: AffectState) -> str:
+    """输出格式块里的连发指令:状态 → 明确的分句要求。"""
+    if state.mode == "withdrawn":
+        return "你现在心冷:只发一条,越短越好(甚至只有一两个字),绝不连发。"
+    if state.arousal > BURST_AROUSAL_GATE or state.adrenaline > BURST_ADRENALINE_GATE:
+        return (
+            "你此刻情绪很满(激动也好,上头也好):这次回复就拆成 2~4 条短消息连发,"
+            "每条一个独立的 <reply>,第一条可以只有几个字——像真人在微信上"
+            "话赶话时那样,把一段话拍碎了发,不要合成一大段。"
+        )
+    if state.mode == "warm":
+        return (
+            "你现在心情好、想跟他多说话:可以把回复拆成 2~3 条短消息连发"
+            "(比如先接住他的话,再另起一条说你自己想说的);不想拆就发一条稍长的。"
+        )
+    return "多数平常时刻,一条就够;心冷、敷衍的时候只发一条,绝不连发。"
+
+
+# 将参数和激素翻译成人话
 def _render_scalars(state: AffectState) -> str:
     """标量翻译成人话,只在偏离中性时输出。"""
     lines = []
@@ -200,7 +226,7 @@ def render(state: AffectState, persona: Persona,
       notebook_block— 她的小本子:最近的日记 + 自己记下的事(notebook.render_block)
       allow_notes   — 是否开放 write_note 工具(随手记)
     """
-    low_expr = persona.expressiveness < 0.8
+    low_expr = persona.expressiveness < 0.7
 
     directive = _MODE_DIRECTIVES[state.mode].format(
         silent=(_SILENT_LOW_EXPR if low_expr else _SILENT_HIGH_EXPR),
@@ -341,15 +367,17 @@ def render(state: AffectState, persona: Persona,
             "minutes 为 1~1440 的整数。不打算主动去找他就别挂,不要每条都挂。"
         )
 
-    # 两段式生成指令(脑内剧场)+ 多消息连发
+    # 两段式生成指令(脑内剧场)+ 多消息连发(连发与否由代码按状态决定)
     blocks.append(
         "【输出格式】\n"
-        "先在 <thinking> 标签里用第一人称写一两句你此刻真实的内心活动"
-        "(看到他这条消息你心里闪过什么),再在 <reply> 标签里写你实际发出的消息。\n"
-        "内心活动可以和嘴上说的不一致——心里翻江倒海、嘴上只回'嗯'是完全正常的。\n"
-        "像真人发微信一样,你可以把一次回复拆成几条连发的消息:每条用一个独立的 <reply> 标签,"
-        "最多 4 条。兴奋、着急、话多的时候适合连发短句;心冷、敷衍的时候只发一条(甚至只有一两个字),"
-        "绝不连发。多数平常时刻,一条就够。\n"
+        "你的输出必须以 <thinking> 开头:先在 <thinking>…</thinking> 里用第一人称写"
+        "一两句你此刻真实的内心活动(看到他这条消息你心里闪过什么),"
+        "再在 <reply>…</reply> 里写你实际发出的消息。两种标签都必须闭合。\n"
+        "内心活动可以和嘴上说的不一致——心里翻江倒海、嘴上只回'嗯'是完全正常的;"
+        "但对他的分析、盘算(那些用'他'指代他的话)只许出现在 <thinking> 里,"
+        "<reply> 里是你真的发给他的话,对他说话用'你'。\n"
+        "像真人发微信一样,一次回复可以拆成几条连发的消息:每条用一个独立的 <reply> 标签,最多 4 条。\n"
+        + _burst_directive(state) + "\n"
         "格式:<thinking>…</thinking><reply>第一条</reply><reply>(可选)第二条</reply>"
     )
 

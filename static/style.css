@@ -96,6 +96,16 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .msg.user { align-self: flex-end; background: var(--user); border-bottom-right-radius: 4px; }
 .msg.agent { align-self: flex-start; background: var(--agent); border-bottom-left-radius: 4px; }
 .msg .meta { font-size: 10px; color: var(--muted); margin-top: 5px; }
+/* 「这里不对劲」旗标:测试期反馈,悬停消息时才显现,不打扰正常聊天 */
+.flag-btn {
+  display: block; margin-top: 6px; padding: 1px 6px;
+  font-size: 10px; color: var(--muted);
+  background: none; border: 1px solid transparent; border-radius: 6px;
+  cursor: pointer; opacity: 0; transition: opacity .15s;
+}
+.msg:hover .flag-btn { opacity: 1; }
+.flag-btn:hover { border-color: var(--line); color: var(--danger); }
+.flag-btn.done { opacity: 1; color: var(--danger); cursor: default; }
 .empty-hint { margin: auto; color: var(--muted); text-align: center; }
 
 #composer { display: flex; gap: 10px; padding: 16px 22px; border-top: 1px solid var(--line); }

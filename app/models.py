@@ -75,6 +75,9 @@ class Chat(Base):
     core_identity: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 夜间代理上次运行时刻(每晚最多一次的闸)
     last_night_run_ms: Mapped[int] = mapped_column(BigInteger, default=0)
+    # 0.6.1 测试期访问控制:每个 chat 一把钥匙(专属链接),不做用户系统。
+    # ADMIN_TOKEN 未设置时不参与任何判断。
+    access_token: Mapped[str | None] = mapped_column(String(48), nullable=True, index=True)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_active: Mapped[object] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -284,6 +287,54 @@ class AffectSnapshot(Base):
 
     __table_args__ = (
         Index("ix_affect_snapshots_chat_ts", "chat_id", "ts_ms"),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Turn logs — 感知/决策日志(0.6.1,测试期审计)。
+#  affect_snapshots 记"状态变成了什么",这张表记"为什么":extractor 怎么分类
+#  (误判审计的原料)、dynamics 触发了哪些规则、注入了哪些块、guardrail 是否
+#  介入、工具调了什么。纯观测,可整表清空重来,不是任何功能的数据源。
+#  铁律 1:消息内容不二存,只存 L3 memory id,审计接口时再 join。
+# ──────────────────────────────────────────────────────────────────
+class TurnLog(Base):
+    __tablename__ = "turn_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid7)
+    chat_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), index=True
+    )
+    ts_ms: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+    turn: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(8), default="message")  # message | timer
+
+    # 内容指针(不二存):他这条消息 / 她这轮发出的各条回复,都在 L3
+    user_mem_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("memories.id", ondelete="SET NULL"), nullable=True
+    )
+    reply_mem_ids: Mapped[list] = mapped_column(JSONB, default=list)   # [str(uuid), …]
+
+    # 感知:extractor 校验后的输出(去 _ 前缀内部键),confidence 单列便于过滤
+    events: Mapped[dict] = mapped_column(JSONB, default=dict)
+    confidence: Mapped[str] = mapped_column(String(8), default="high", index=True)
+
+    # 决策:dynamics 触发的规则(人话 trace)、进入的模式、注入块标题清单
+    trace: Mapped[list] = mapped_column(JSONB, default=list)
+    mode: Mapped[str] = mapped_column(String(16), default="neutral")
+    prompt_blocks: Mapped[list] = mapped_column(JSONB, default=list)   # 各块首行
+    system_prompt: Mapped[str] = mapped_column(Text, default="")       # 全文,TURN_LOG_FULL_PROMPT 开启时
+
+    # 生成侧:检索命中摘要(id+分数+截断)、工具调用、guardrail 介入记录
+    retrieved: Mapped[list] = mapped_column(JSONB, default=list)
+    tools: Mapped[list] = mapped_column(JSONB, default=list)
+    guard: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # 用户反馈:「这里不对劲」一键旗标(测试期最便宜的高信号反馈)
+    flagged: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    flag_note: Mapped[str] = mapped_column(Text, default="")
+
+    __table_args__ = (
+        Index("ix_turn_logs_chat_ts", "chat_id", "ts_ms"),
     )
 
 

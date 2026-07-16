@@ -53,26 +53,38 @@ def detect_break(replies: list[str]) -> list[str]:
 
 
 # ── 输出侧内心独白泄漏检测 ──────────────────────────────────────────────
-# DeepSeek 偶尔丢 <thinking>/<reply> 标签;解析器"绝不失声"的兜底会把整段独白
-# 当回复发出(实盘样例:整段"他今天…他需要的不是…"的第三人称分析直达用户)。
+# DeepSeek 偶尔丢 <thinking>/<reply> 标签,两种实盘形态:
+#   a) 完全没打标签 → 解析退化,整段独白被"绝不失声"兜底当成回复;
+#   b) 标签"看似闭合",但模型把独白整段塞进了第一个 <reply> 内部(丢的是
+#      <thinking> 而不是所有标签)——0.6.1 之前这里被闭合短路直接放行,是盲区。
 # 特征:脑内剧场以第三人称分析"他"(他=用户本人),真正对他说的话满篇是"你"。
-# 宁漏勿误,两道闸:只在解析已退化(raw 里没有闭合 <reply>)时才检;且要求
-# 消息以"他"开场 + 通篇"他"多于"你"——转述第三者的八卦极少同时满足这两条。
+# 宁漏勿误:必须以"他"开场 + 通篇"他"显著多于"你";闭合形态(b)只检第一条
+# (独白总在最前)且阈值更严——转述第三者的八卦极少同时满足这些条件。
 _CLOSED_REPLY_RE = re.compile(r"<reply>.*?</reply>", re.S | re.I)
 _LEAK_MIN_HE = 3          # 至少出现这么多个"他"才可能是分析段
+_LEAK_REASON = "泄漏内心独白(整段第三人称分析被当成回复发了出去)"
+
+
+def _looks_like_monologue(reply: str, *, strict: bool) -> bool:
+    text = reply.strip().lstrip('"\'「」『』“”‘’(( ')
+    if not text.startswith("他"):
+        return False
+    he, you = text.count("他"), text.count("你")
+    if strict:
+        # 标签看似闭合时要更强的证据:独白大量用"他"、几乎不出现"你"
+        return he >= _LEAK_MIN_HE + 1 and he >= 2 * max(you, 1)
+    return he >= _LEAK_MIN_HE and he > you
 
 
 def detect_thinking_leak(raw: str, replies: list[str]) -> list[str]:
     """返回泄漏原因列表(空 = 干净)。与 detect_break 同构,便于共用纠正重生成。"""
-    if _CLOSED_REPLY_RE.search(raw):
-        return []          # 标签闭合,解析没有退化 —— 独白已被正常剥离,不必猜
-    for r in replies:
-        text = r.strip().lstrip('"\'「」『』“”‘’(( ')
-        if not text.startswith("他"):
-            continue
-        he, you = text.count("他"), text.count("你")
-        if he >= _LEAK_MIN_HE and he > you:
-            return ["泄漏内心独白(整段第三人称分析被当成回复发了出去)"]
+    if not _CLOSED_REPLY_RE.search(raw):
+        # 形态 a:解析已退化,每条都可疑
+        if any(_looks_like_monologue(r, strict=False) for r in replies):
+            return [_LEAK_REASON]
+    elif replies and _looks_like_monologue(replies[0], strict=True):
+        # 形态 b:独白被塞进闭合的第一个 <reply> 里
+        return [_LEAK_REASON]
     return []
 
 

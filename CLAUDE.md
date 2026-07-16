@@ -40,7 +40,7 @@ python -m scripts.simulate --scenario scripts/scenarios/neglect_week.json --pres
 - Content is stored **once**, in L3 `memories.content`. Every other layer (L2, L1, tags) holds **ids only**. Derived caches (L2, summaries) are disposable and rebuildable — never a source of truth.
 - Text that goes into vectors is **pure content** (VectorDB_1) or **pure emotion+reasoning** (VectorDB_2). Tags / timestamps / speaker are side-car columns used as `WHERE` filters at retrieval, never concatenated into embedded text.
 - **Hot path is zero-LLM**: tagging is deterministic kNN/centroid voting. The LLM only names already-formed clusters, in offline Dream (`DREAM_ENABLED=false` by default).
-- **The LLM never decides numbers.** The extractor (flash) outputs discrete classifications only; `app/affect/dynamics.py` (pure code, heavily unit-tested) turns them into numeric state changes.
+- **The LLM never decides numbers.** The extractor (default pro since 0.6.2, `EXTRACTOR_MODEL`) outputs discrete classifications only; `app/affect/dynamics.py` (pure code, heavily unit-tested) turns them into numeric state changes.
 - **All time goes through `app/clock.py`** (injectable offset). Never call `time.time()` / `datetime.now()` directly — the simulation harness depends on this.
 - Primary keys are UUIDv7; time queries use dedicated indexed `ts_ms` columns.
 
@@ -51,12 +51,14 @@ Two pillars: an **affect state machine** (`app/affect/`) whose hidden numeric st
 Per-turn orchestration lives in `app/conversation/pipeline.py::handle_message` — extraction and dynamics run **before** generation so her reply reflects how his current message moved her state:
 
 1. time effects (arousal cooldown / session boundary / offline affection decay)
-2. event extraction — LLM① flash, strict JSON, classification only
+2. event extraction — LLM① (default pro, `EXTRACTOR_MODEL`), strict JSON, classification only + confidence flag
 3. dynamics + mode transition — pure code
 4. persist his message to L3 + zero-LLM tagging
 5. assemble L1 (cherished + L2 hot + L3 retrieval, deduped + token-budgeted; plus time-sense, schedule, topic seeds, injector state blocks)
 6. generation — LLM② pro, bounded agent loop (`search_memory` / `grep_memory` / `set_timer` / `write_note`, `TOOL_MAX_ROUNDS` then forced answer); output is `<thinking>` + 1–4 `<reply>` bursts
-7. persist her replies to L3 + tagging; 8. save affect state (+ timer pings); 9. background maintenance (auto-dream, life sim)
+7. persist her replies to L3 + tagging; 8. save affect state (+ timer pings) + `turn_logs` perception/decision audit row; 9. background maintenance (auto-dream, life sim)
+
+Test-launch infra (0.6.2): per-chat `access_token` guard (`app/auth.py`, off when `ADMIN_TOKEN` empty), `DAILY_MESSAGE_LIMIT` cost gate, `turn_logs` audit table (`GET /api/chats/{id}/turns`, ⚑ flag endpoint) — content never duplicated, memory ids only.
 
 A second entrypoint, `handle_timer_fire`, produces proactive messages (timer/commitment pings): no extraction/dynamics, result pushed to the frontend over SSE (`GET /api/chats/{id}/events`, in-process `conversation/bus.py`).
 
