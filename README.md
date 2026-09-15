@@ -1,303 +1,92 @@
 # Dreamory
 
-本项目旨在提供一个伴侣llm的基础设施. 
+A backend for a long-running companion chatbot. The problem it tries to solve: a stateless LLM behind a chat box has no memory beyond the context window and no internal state, so it is equally cheerful in every message and forgets everything after a few thousand tokens. Dreamory keeps both of those things *outside* the model, in code and in Postgres, and compiles them into the prompt every turn.
 
-情绪感知 + 层级记忆的伴侣 App。两大支柱:
+Two pieces do most of the work:
 
-1. **情绪状态机** —— 以 *Emotion Bids* + *Attachment Theory* 为核心的隐藏参数集
-   ("脑内剧场"),用纯代码维护、确定性地编译进 prompt,让 LLM 不再"永远满状态、
-   每条回复一样长"。
-2. **三级层级记忆(L1 / L2 / L3 + 正交 Tag 注册表)** —— MemGPT / Letta 风格,在
-   有限上下文窗口下做近乎无限、可持续的长期记忆。
+- **An emotion state machine** (`app/affect/`). A small set of scalars (arousal, security, patience, affection, three "hormone" decays on different time scales), a six-mode state machine with hysteresis, and a rule table that updates them from discrete events. The LLM only classifies what the user said; it never picks the numbers.
+- **A three-tier memory** (`app/memory/`). Every message is stored once in Postgres with two pgvector embeddings (content axis and emotion axis). A time-decayed hot cache holds ids only, and a token-budgeted assembler decides what goes into the context window each turn.
 
-在此之上的拟真模块:
+Around those: a bounded tool-calling loop so the model can search its own memory, a regex-based guardrail that catches persona breaks and regenerates once, a scheduler that lets the character send messages on its own, and a per-turn audit log that records every classification, rule firing, retrieval hit and tool call so misjudgements can be reviewed after the fact.
 
-- **多消息连发**(v0.2)—— 她像真人发微信一样,可以把一次回复拆成几条短消息连发
-  (兴奋时连发,心冷时只回一两个字);
-- **定时器 + 时间感知**(v0.2)—— 她知道现在几点、你们多久没说话;说了"等我5分钟"
-  就真的会在 5 分钟后主动来找你(后台隐藏 LLM 调用 + SSE 推送);
-- **好感度系统**(v0.2)—— 碧蓝航线式 0~200 长程刻度(50=陌生,100=恋人),
-  跨会话积累,渗入修复门槛、冷淡阈值、耐心预算等各处动力学;
-- **工具协议 / 迭代记忆搜索**(v0.2.2)—— 生成端是有界 agent loop:她觉得"这事
-  好像聊过"就真的去翻记忆(`search_memory` 双轴向量 / `grep_memory` 原文精确),
-  一次没中换措辞再搜;`set_timer` 取代标签;检索置信度低时提示她"先搜再答";
-- **生活模拟器 + 日程表 + 注意力转移**(v0.2.2)—— 她的线下生活由后台离线预生成,
-  **生成即正史**(写入 L3,细节只生成一次,之后靠检索复述,不会越编越露馅);
-  话题变淡时(纯代码信号)递一条新鲜事当种子,像随口想起一样自然转移话题;
-  作息表让她"活在自己的生活里"——半夜被消息吵醒会带睡意,闹钟撞上睡眠自动顺延;
-- **激素模拟**(v0.2.2)—— adrenaline(20min)/ oxytocin(3h)/ cortisol(20h)
-  三个时间尺度的残留,全由动力学规则触发:吵完架第二天早上"还是不得劲";
-- **自我迭代地基**(v0.2.2)—— 核心人格数据化(`chats.core_identity`)+ 配置
-  append-only 版本快照/回滚,为将来开放模型自改基础设施铺路;
-- **守护层**(v0.3)—— 防角色扮演崩坏的三段防御:输入侧试探标记(persona_attack)、
-  常驻【底线】块(第四面墙 + 能力边界:见不了面的事说成期许而非承诺)、输出侧
-  零-LLM 崩坏检测 + 一次隐藏纠正重生成——绝不向用户吐机械警告,也绝不失声;
-- **夜间代理 + 她的小本子**(v0.3)—— 她睡着后后台"睡前整理":当天对话蒸馏成
-  持久事实(kind=passage 的第一个生产者)、以她口吻写日记、自己排明天的日程;
-  小本子(write_note 随手记 + 日记)是 model-curated 记忆——自动 RAG 管海量召回,
-  自己写下的几行字管最要紧的事;
-- **好感度解锁 persona 演化**(v0.3)—— 升到 crush/lover/devoted/oath 档时,
-  她这个人也变一点(新称呼/新习惯/新的自我认知):append-only、每档一次、
-  应用前自动快照可回退——"自我迭代"地基上的第一个真实住户;
-- **情绪时间序列 + 记忆健康度**(v0.4)—— 每轮快照落 `affect_snapshots`,
-  前端画好感度/激素/安全感逐轮曲线(调参终于有了眼睛);六项健康指标
-  (打标积压/词表垄断/近重复灌水/情绪轴漂移/人格漂移/模式震荡)+ 0~100 总分,
-  夜间体检亮旗即强制 Dream 全局维护——"数字生命寿命"的第一块仪表盘;
-- **跨进程部署**(v0.4)—— 后台单飞下沉为 Postgres advisory lock,
-  定时器认领 `FOR UPDATE SKIP LOCKED`,多 worker 部署不再重复跑任务/重复触发闹钟;
-- **解释与真实动因分离**(v0.5)—— confabulation:她对自己状态的解释是真诚编的
-  ("就是有点累"),真实原因(被磨掉的耐心/压着的回路/没散的皮质醇)只体现在
-  行为里;口径会话内黏性,`insight` 参数决定说到点子上的概率(傲娇 0.15 连自己
-  都骗)。顺着借口哄不到点子上,猜中她说不出的真因才有大额修复——
-  "他比我更懂我"从她告诉你变成你去发现;
-- **加速老化脚手架**(v0.5)—— 可注入时钟拨快"现在",一周相处几分钟跑完
-  (真实管线,不是 mock);场景步骤 DSL + LLM 扮演用户;产出快照 CSV/健康报告,
-  对话真实入库前端直接看曲线。内置温情周/冷落周两个对照场景;
-- **承诺兑现闭环**(v0.6)—— 承诺有了完整生命周期:到期时间语义("周六打电话"
-  周二不再变旧账,过点+宽限才算爽约;"下次…"熬过4个会话才算食言)、兑现分级
-  奖励(说到做到 > 迟到兑现 > 一般回应;爽约比一般旧账更伤)、**到点主动催**
-  (他没兑现她会来问,已兑现绝不空催;口吻交给性格——委屈/试探/直问/憋着)、
-  临期感知("还有6小时到点"/"过点2天他没动静"渗进她的关系记忆)。
+Stack: **FastAPI** (async), **PostgreSQL 16 + pgvector**, **SQLAlchemy 2 async / asyncpg**, DeepSeek through the OpenAI-compatible SDK, **bge-m3** embeddings (via API, local, or a deterministic hash fallback for tests). Frontend is a single-page vanilla JS client. Chinese-language persona; the code comments are largely in Chinese.
 
-> 铁律:**内容只存一份(L3)**;其它层只持 id。**进向量的文本是纯内容**,
-> tag / 时间 / 说话人一律作旁挂列,检索时当 `WHERE` 过滤。**热路径零 LLM**;
-> LLM 只在离线 Dream 阶段"给已成形的簇命名"。派生缓存(L2、摘要)可丢可重建,
-> 绝不反向成为真相。
+**Status.** This repository is v0.6.2, which was shared with a small group of testers. The architecture held up technically, but the product direction had a design flaw: the emotional dynamics were tuned so that the *user* ended up doing the emotional work rather than receiving it, which made the experience tiring instead of pleasant. A v1 rewrite that keeps the memory and infrastructure ideas but restructures the affect layer is in progress and not yet published. This README describes what is here.
 
-技术栈:**FastAPI** + 原生 **HTML/CSS/JS**;**DeepSeek v4 pro/flash**;
-**bge-m3** embedding;**PostgreSQL + pgvector**。
+## How a turn works
 
----
+`app/conversation/pipeline.py::handle_message` runs the following steps for every user message:
 
-## 架构总览
+1. **Time effects** – decay arousal and hormones, reset per-session patience if the gap is over 6 h, age unresolved "open loops" so they can settle into grievances.
+2. **Event extraction (LLM call 1)** – a JSON-mode call classifies the message: what kind of bid it is (venting, sharing, seeking comfort, testing…), how it responds to her last bid (turn toward / away / against), apology, commitment, persona attack. Output is schema-validated in code; on failure it degrades to a neutral event so the pipeline never stalls.
+3. **Dynamics (no LLM)** – `affect/dynamics.py` applies the rule table: scalar updates, open-loop bookkeeping, mode transition with hysteresis. All constants live at the top of the file so they can be swept.
+4. **Persist + tag** – the user's message is written to `memories` with both embeddings and tagged by kNN label propagation against a controlled vocabulary (no LLM on this path).
+5. **Assemble L1** – `memory/l1_assembly.py` fills the context window's memory region from three slots (cherished, working-memory FIFO, retrieved) under a token budget, deduplicating by id across slots. `affect/injector.py` renders the persona, relationship stage, current affect and tool instructions.
+6. **Generate (LLM call 2)** – `_generate_with_tools` runs at most `TOOL_MAX_ROUNDS` tool rounds (`search_memory`, `grep_memory`, `set_timer`, `write_note`), then forces a final answer with `tool_choice="none"`. If anything in the tool path fails, it falls back to a plain completion. Output uses `<thinking>` / `<reply>` tags; the parser handles unclosed and orphaned tags and strips anything that would otherwise leak to the user.
+7. **Guardrail** – `conversation/guardrail.py` scans the visible replies with a conservative regex set (first-person "I am an AI", assistant-style refusals, system-prompt mentions, markdown fences) and checks for inner-monologue leakage. On a hit it regenerates once with a hidden corrective note. If the retry also fails it sends the original anyway; the user never sees a "content blocked" message.
+8. **Persist replies, schedule timers, snapshot** – replies go to L3; a timer ping is queued if she said she would come back later; the affect state, an `affect_snapshots` row and a `turn_logs` row are written.
 
-```
-浏览器 (static/)  ──HTTP + SSE──>  FastAPI (app/)
-                                │
-        ┌───────────────────────┼────────────────────────┐
-        ▼                       ▼                        ▼
-  affect/ 情绪引擎        conversation/pipeline      memory/ 三级记忆
-  state/persona          每轮编排:                   l3_store  (L3 冷存储+grep)
-  (好感度八档+激素三轴)   ①时间效应 ②抽取(flash)       tags     (注册表+kNN打标)
-  dynamics(纯代码,       ③动力学  ④落库+打标         retrieval(双轴召回+时间过滤)
-   含激素/话题热度)       ⑤组装L1(+时间感知+日程       l2_hot   (热度+批量回写)
-  extractor(LLM①)          +话题种子+置信度提示)      l1_assembly(去重+弹性预算)
-  injector(状态→prompt,   ⑥生成(pro, 有界agent loop:  dream    (离线维护,默认关)
-   关系阶段+工具教学)       search/grep/set_timer)
-                          ⑦逐条落库+打标 ⑧存状态
-                          ⑨后台: auto-dream + life_sim
-                                │
-  conversation/timer     ← 后台调度器:到点 → handle_timer_fire(隐藏LLM调用,睡眠顺延)
-  conversation/bus       ← SSE 事件总线:主动消息推给前端
-  conversation/tools     ← 工具协议:search_memory / grep_memory / set_timer
-  conversation/schedule  ← 日程表:作息匹配 + L1【你的生活】编译(纯代码)
-  conversation/life_sim  ← 生活模拟器:离线预生成她的线下事件(生成即正史)
-  conversation/config_store ← 配置版本快照/回滚(自我迭代地基)
-  conversation/guardrail ← 守护层:persona_attack 标记 + 底线块 + 崩坏检测/纠正重生成
-  conversation/night_agent ← 夜间代理:蒸馏→passage / 日记 / 明日计划 / Dream
-  conversation/notebook  ← 她的小本子:write_note 随手记 + 日记(model-curated)
-  conversation/evolution ← 好感度里程碑 → persona 演化(append-only + 快照)
-  conversation/timeline  ← 情绪时间序列:每轮快照落库 + 历史查询(可观测性)
-  memory/health          ← 记忆健康度:漂移/熵/冗余/震荡 六指标体检(只读)
-  db_locks               ← 跨进程单飞:Postgres advisory lock(多 worker 安全)
-  affect/narrative       ← confabulation:错误归因规则表 → 她"以为的原因"(零LLM)
-  clock                  ← 可注入时钟:全项目时间入口(scripts/simulate 拨快用)
-  承诺闭环(v0.6,跨模块) ← extractor 算到期 → dynamics 分级奖惩/爽约沉淀 →
-                            pipeline 挂 kind=commitment ping → timer 条件触发主动催
-                                │
-                                ▼
-                    PostgreSQL + pgvector
-            memories(主表 + content_vec + emotion_vec)
-            tags / tag_aliases / chats / timer_pings
-            schedule_items / life_events / chat_revisions / notes
-            affect_snapshots(情绪时间序列)
-```
+Background work (auto-dream, life simulator, night agent, persona evolution) is kicked off after the turn commits and runs under Postgres advisory locks (`app/db_locks.py`) so multiple workers do not run the same job twice. Timer pings are claimed with `SELECT … FOR UPDATE SKIP LOCKED` for the same reason.
 
-### 三级记忆与里程碑映射
+## Memory design
 
-| 层 | 角色 | 实现 | 里程碑 |
-|----|------|------|--------|
-| **L1** 上下文窗口 | 快、小、当前在用。槽位:核心人格 / 刻骨铭心 / 工作记忆 / L3检索 / 当前目标 / 当前情绪 / 挂起回路 | [l1_assembly.py](app/memory/l1_assembly.py) + [injector.py](app/affect/injector.py) + [identity.py](app/conversation/identity.py) | M5 |
-| **L2** Hot Zone | 中、只读、常用。**只存 id**,按时间衰减热度进出,内存计数 + 后台批量回写 | [l2_hot.py](app/memory/l2_hot.py) | M4 |
-| **L3** 冷存储 | 慢、无限、唯一真相源。主表 + VectorDB_1(内容轴)+ VectorDB_2(情绪轴) | [l3_store.py](app/memory/l3_store.py) + [models.py](app/models.py) | M1 / M3 |
-| **Tag 注册表** | 横跨 L3 的正交索引:受控词表 + 每个 tag 的 centroid;热路径 kNN 打标(零 LLM) | [tags.py](app/memory/tags.py) | M2 |
-| **Dream** | 离线维护:聚类→命名(LLM)→合并/拆分→重映射→刷新 centroid。**默认关闭** | [dream.py](app/memory/dream.py) | M6 |
-| 检索/偏置增强 | 双轴检索、多步检索、当前目标条件偏置 | [retrieval.py](app/memory/retrieval.py) | M3 / M7 |
+| Tier | What it holds | Where |
+|---|---|---|
+| L3 (source of truth) | every message and derived passage, once; `content_vec` and `emotion_vec` (1024-d, HNSW indexes); tags as a GIN-indexed array | `memory/l3_store.py`, `models.py` |
+| L2 (hot cache) | ids only, fixed capacity, ordered by time-decayed heat; hits are counted in memory and flushed in batches | `memory/l2_hot.py` |
+| L1 (context) | the assembled prompt region for this turn | `memory/l1_assembly.py` |
 
----
+Retrieval (`memory/retrieval.py`) searches either axis or both, applies a hard relevance floor on the raw cosine score (kNN always returns *k* rows, so without a floor irrelevant noise would enter the prompt and accumulate heat), uses tags as a `WHERE` filter, and can bias by the chat's current goal. When the best automatic hit is below a confidence threshold, the prompt tells the model its memory is hazy and it may search explicitly.
 
-## 快速开始
+Tags are assigned on the hot path by kNN vote plus centroid similarity; the vocabulary itself is only changed by the offline **Dream** job (`memory/dream.py`: cluster → LLM names the cluster → merge/split → remap), which is built and callable but disabled in the example configuration.
 
-### 1. 安装依赖
+## Reliability and observability
+
+- **Every LLM output is validated in code.** Extraction is schema-checked; generation is tag-parsed with fallbacks; night-agent payloads are validated before being applied.
+- **Tools are an enhancement, not a dependency.** Tool-loop failure, guardrail failure and extractor failure each degrade to a defined behaviour rather than an error.
+- **`turn_logs`** (`conversation/turnlog.py`) records, per turn: the full extraction result with a confidence flag, which dynamics rules fired, the list of injected prompt blocks, retrieval hits with scores, tool calls, and guardrail interventions. Message text is stored by id only. `GET /api/chats/{id}/turns?flagged=true` and a one-click "this felt wrong" button in the UI make it possible to audit misclassifications from real conversations.
+- **`affect_snapshots`** gives a per-turn time series of the hidden state; the frontend plots it. `memory/health.py` computes six drift/redundancy/oscillation metrics over a chat's memory.
+- **Accelerated ageing** (`scripts/simulate.py`). All time reads go through `app/clock.py`, which can be offset. A JSON scenario DSL (say / advance hours / run the night agent / let an LLM play the user for *n* turns) drives the *real* pipeline against a real database, so a week of interaction runs in minutes and produces a CSV of the state trajectory plus a health report. Four reference scenarios are included (a warm week, a week of neglect, and two commitment-tracking cases).
+- **Test-period access control** (`app/auth.py`): with `ADMIN_TOKEN` set, each chat gets its own access token and testers receive an isolated link; global endpoints require the admin token. A rolling 24 h per-chat message cap returns 429.
+
+## Tests
+
+183 tests, `pytest -q`, about one second. They cover the pure-function parts — dynamics rules, affection curve, hormone half-lives, tag parsing, generation parsing, L1 budgeting and dedup, guardrail patterns, schedule matching, night-agent payload validation, health metrics, clock and commitment semantics — and use the hash-embedding backend so no database, API key or model download is needed.
+
+## Running
 
 ```bash
+docker compose up -d                 # Postgres 16 with pgvector
+cp .env.example .env                 # set DEEPSEEK_API_KEY; EMBEDDING_BACKEND=api needs a SiliconFlow key,
+                                     # or use EMBEDDING_BACKEND=fallback to run without one
 pip install -r requirements.txt
-```
-
-> Embedding 有三种后端(`EMBEDDING_BACKEND`):
-> - **`api`(推荐,已配好)** —— 真实 bge-m3 走 SiliconFlow 的 OpenAI 兼容 HTTP 接口,
->   **无需 torch/GPU**。需要 `EMBEDDING_API_KEY` + `EMBEDDING_BASE_URL`。
-> - `bge_m3` —— 本地 BAAI/bge-m3,需 `pip install FlagEmbedding torch`。
-> - `fallback` —— 零依赖确定性哈希向量,供离线开发/CI。
-
-### 2. 起数据库(Postgres + pgvector)
-
-```bash
-docker compose up -d          # 拉起带 pgvector 的 Postgres 16
-```
-
-### 3. 配置
-
-```bash
-cp .env.example .env          # 填入 DEEPSEEK_API_KEY;其它有合理默认值
-```
-
-### 4. 建表 + 冷启动种子标签
-
-```bash
-python -m scripts.init_db     # 启用 pgvector + 建表 + HNSW/GIN 索引
-python -m scripts.seed_tags   # 手动种子词表(按 facet 组织)
-```
-
-### 5. 启动
-
-```bash
+python -m scripts.init_db            # extension, tables, HNSW/GIN indexes
+python -m scripts.seed_tags
 uvicorn app.main:app --reload --port 8000
 ```
 
-打开 <http://127.0.0.1:8000> —— 左侧新建对话(可选性格预设/目标),中间聊天,
-右侧"脑内剧场"实时显示:内心独白、情绪标量、事件分类、动力学轨迹、挂起回路/旧账、
-L1 检索命中、本轮打的 tag。
+`GET /healthz` reports backend, embedding and dream status. The chat router exposes 19 endpoints under `/api/chats` (create/list/get/patch/delete, messages, an SSE stream for proactive messages, timers, schedule, life events, notes, affect history, health, turn logs, config revisions with rollback) and the memory router 4 (retrieval introspection, tags, seed, dream run).
 
----
+## Layout
 
-## API 速览
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/chats` | 新建对话(`preset` / `persona` / `goal`) |
-| GET  | `/api/chats` | 列出对话 |
-| GET/PATCH/DELETE | `/api/chats/{id}` | 取/改/删对话 |
-| GET  | `/api/chats/{id}/messages` | 历史消息 |
-| POST | `/api/chats/{id}/messages` | 发消息 → 跑完整管线,返回 `messages`(连发列表)+ debug |
-| GET  | `/api/chats/{id}/events` | **SSE** 推送流:定时器触发的主动消息从这里到达 |
-| GET  | `/api/chats/{id}/timers` | 当前挂着的"过会儿来找他"闹钟 |
-| GET  | `/api/chats/{id}/schedule` | 她的日程表(作息 + 一次性安排) |
-| GET  | `/api/chats/{id}/life-events` | 生活模拟器生成的线下事件(含种子状态) |
-| GET  | `/api/chats/{id}/notes` | 她的小本子(日记 + 随手记) |
-| GET  | `/api/chats/{id}/affect-history` | 情绪时间序列(每轮快照,曲线/调参分析) |
-| GET  | `/api/chats/{id}/health` | 记忆健康体检(六指标 + 旗标 + 总分) |
-| POST | `/api/chats/{id}/night-run` | 手动触发一次夜跑(测试用;平时她睡着后自动跑) |
-| GET  | `/api/chats/{id}/revisions` | 配置版本历史(persona/core_identity/goal 快照) |
-| POST | `/api/chats/{id}/revisions/{rev}/rollback` | 回退到某个历史配置(回退本身也留快照) |
-| POST | `/api/chats/{id}/retrieve` | 双轴检索内省(`axis=content\|emotion\|both`) |
-| GET  | `/api/tags` | 受控词表 |
-| POST | `/api/tags/seed` | 种子/更新一个 tag(含 centroid) |
-| POST | `/api/dream/run?force=true` | 手动跑一次 Dream |
-| GET  | `/healthz` | 健康检查(后端/embedding/dream 状态) |
-
----
-
-## 测试
-
-```bash
-pytest -q
+```
+app/
+  affect/        state, dynamics (rule table), extractor (LLM 1), injector (prompt), persona, narrative
+  memory/        l3_store, l2_hot, l1_assembly, retrieval, tags, dream, health
+  conversation/  pipeline, tools, guardrail, timer, schedule, life_sim, night_agent,
+                 notebook, evolution, timeline, turnlog, config_store, bus (SSE)
+  llm/           DeepSeek client wrapper, embedding backends
+  routers/       chat, memory
+  auth.py  clock.py  db_locks.py  config.py  models.py  schemas.py  main.py
+scripts/         init_db, seed_tags, simulate (+ scenarios/)
+static/          single-page client
+tests/           19 files
 ```
 
-- `tests/test_dynamics.py` —— 情绪动力学是纯函数,逐条耦合规则直接断言(不跑 LLM):
-  投标被忽略 → 挂起回路 + 耐心下降;冲突有滞回;道歉被 security 门控;
-  焦虑型掉 security 更快;挂起回路跨会话沉淀为旧账;回避型受攻击转冷而非吵架。
-- `tests/test_affection.py` —— 好感度动力学:预设起点与关系阶段一致;涨慢跌快
-  (×anxiety);上下限钳制;恋人档以上增益递减;深爱易被哄好 / 失望哄不动;
-  新会话 warm_streak 好感底座 + 耐心加成;离线 >3 天缓降(下限 60);
-  跨档记录 `_tier_shift`,跨"恋人"线是里程碑。
-- `tests/test_pipeline_parse.py` —— 多消息解析(多 `<reply>` 保序 / 封顶 / 空条过滤 /
-  无标签 fallback);`<timer>` 解析 + 剥除 + 分钟钳制;她的"上一条消息"=完整连发段;
-  时间感知渲染(gap 人话化)。
-- `tests/test_memory.py` —— fallback embedder 的维度/归一化/语义序;token 估算;
-  L1 全局去重(刻骨铭心 > L2热 > 检索)、排除工作记忆窗口、预算溢出丢弃。
-- `tests/test_hormones.py` —— 激素三轴半衰期彼此可分(3h 后 adrenaline≈0、
-  oxytocin 恰好半衰、cortisol 剩大半);"隔夜 arousal 凉了 cortisol 还在";
-  事件触发(被攻击/和好/被接住/跨里程碑);耦合(oxytocin 松修复门槛、cortisol
-  紧门槛 + 磨隔夜耐心);dull_streak 计数与重置(吵架不算"淡");0.2.0 旧 affect
-  JSON 无激素字段可直接加载。
-- `tests/test_schedule_tools.py` —— routine 匹配(普通/跨午夜/按星期归属开始日);
-  睡觉优先与 wake_ms;L1 块编译;工具 schema 按 allow_timer 裁剪;时间参数映射;
-  dispatch 坏参数/未知工具的降级;set_timer 配额与分钟钳制。
-- `tests/test_l1_identity.py` —— L1 弹性预算(刻骨铭心空闲份额溢给相关槽,
-  用满时相关槽仍守 30%);core_identity 覆盖(替换出厂编译/保留 tag 词表/
-  空覆盖回退)。
-- `tests/test_injector_blocks.py` —— 注入器区块结构回归:set_timer 必须独立成块
-  (带"什么时候必须调用"清单 + 因果重锤),不许塞进【主动回忆】;工具关闭时
-  退回 `<timer>` 标签块。实盘教训:降级成子弹点会让定时器合规率掉到 1/3。
-  0.3.0 增:【底线】紧跟关系框架、小本子/随手记按开关注入、write_note spec 门控。
-- `tests/test_guardrail.py` —— 崩坏检测宁漏勿误:第一人称自曝/助手腔/代码栅栏命中;
-  聊AI话题、引述("你说我是机器人")、否认("我不是AI")不命中;底线块三线防御齐全;
-  纠正注入是导演递条不是告警腔;extractor 的 persona_attack 校验。
-- `tests/test_night_evolution.py` —— 夜间载荷清洗(先校验后封顶,坏条目不挤掉好条目;
-  非法 HH:MM/越界星期丢弃;日记判空截断);plan_due_ms 落在明天;演化提案校验
-  (60字上限/换行清洗/空提案不应用);apply append-only(名字永不动);
-  低档不在解锁表。
-- `tests/test_timeline_health.py` —— 快照构造(回路压力/未解决旧账数/事件标注/
-  timer来源);健康度纯函数(质心余弦距离同向≈0正交≈1、全重复冗余≈1、
-  模式震荡计数、评分与标签表一致);跨进程锁 key(确定性/int32范围/锁空间不重)。
-- `tests/test_clock_narrative.py` —— 时钟偏移/归零/models委托;拨快8小时驱动
-  会话边界(耐心重置+口径翻篇);心平气和不需要口径;口径会话内黏性、模式切换
-  才换;insight=1 真话说到真实回路,insight=0 甩锅给生活正史事件且真因绝不出现;
-  注入块结构(【你自己以为的原因】+"意识不到");序列化往返。
-- `tests/test_commitment.py` —— 承诺时间语义(未到期安然越冬/过点+宽限沉淀且
-  更伤/宽限内不算/含糊承诺熬4会话);兑现分级(说到做到>一般回路关闭,迟到打折,
-  oxytocin 踏实感);到期状态人话渲染全阶段;临期 nudge 出现与不唠叨;
-  extractor due_hours 校验(越界/无承诺/非数值→None);due_ms 序列化兼容旧档。
+## Known limitations
 
-### 当前验证状态
-
-- ✅ 144 个单测通过(134 + 0.6.0 承诺闭环 10),离线 < 1s
-- ✅ **0.6.0 承诺闭环核心验收通过**(DeepSeek 实盘两轮,详见 CHANGELOG):
-  到点主动催口吻性格分化清晰(tsundere 嘴硬暗示 vs clingy 委屈连发,无闹钟腔);
-  已兑现绝不空催(resolved silently,零 LLM 浪费);说到做到 affection +3.7,
-  信任溢价 2.5>1.5 成立。实测反馈已落地:due_hours 下限调至 0.1h(10分钟承诺
-  可过),同 tick 同对话错峰(承诺催与她的 set_timer 不再同秒双发)。
-- ✅ **0.5.0 端到端已验证**(DeepSeek 实盘,A/B/C 三组全过,详见 CHANGELOG):
-  confabulation 回报机制成立(顺着口径哄 security Δ−0.07 vs 猜中真因 Δ+0.11,
-  差值符号相反、loop 仅在猜中时命中);口径黏性一字不换、13 条口径全人话、
-  甩锅取材于真实生活正史;insight 0.7/0.15 分化成立;老化脚手架温情周/冷落周
-  三轴曲线明确分化(好感终态差 ~32);定时器/守护层/夜跑在时钟收口后无回归。
-- ✅ **0.4.0 端到端已验证**(DeepSeek 实盘):聊 3 轮后 affect-history 返回 3 条
-  快照且前端曲线渲染正常;新对话体检 score=90(命中 tag_monoculture,冷启动
-  种子词表覆盖率高属预期);night-run report 携带 health 字段。
-- ⚠️ 多进程注记:后台任务与定时器已跨进程安全;SSE EventBus 仍是进程内的,
-  多 worker 下主动消息可能推到没有订阅者的进程——消息本体在 L3,刷新即见
-  (符合"缓存可丢"铁律),需要实时跨进程推送时再上 Redis pub/sub。
-- ⚠️ 0.3.0 的守护层重生成、夜间代理、persona 演化尚未跑真实 DeepSeek 端到端
-  (各自都有独立降级路径:守护失败发原文、夜跑单步失败不拖垮整晚、演化失败静默)。
-- ✅ **0.2.0 完整端到端已验证**(Postgres via docker + 真实 DeepSeek/bge-m3):
-  多消息连发(clingy 报喜连发 3 条);时间感知(她会抱怨"说好2分钟结果半小时");
-  定时器自然闭环(她自发挂 `<timer minutes="1">` → 调度器到点 → 隐藏 LLM 调用
-  → 主动消息落 L3 + SSE 推送,内容精准衔接她自己写的备忘);
-  好感度起点/分档正确注入(恋人档自然喊"老公")。
-- ✅ **0.2.2 agent loop 端到端已验证**(DeepSeek 实盘):一轮内 3 次真实工具调用
-  (grep_memory×2 → search_memory),每次对真实 DB 执行、结果回喂,撞到轮次上限后
-  `tool_choice=none` 强制作答且答案正确;exclude_ids 去重与失败降级路径成立。
-  实测发现的 set_timer 合规性回归(教学被降级成【主动回忆】的子弹点 → 成功率 1/3)
-  已修复:工具路径下定时器恢复独立区块 + 因果重锤,块结构有回归测试钉死;
-  search_memory 增加相关性下限,不再把低分填充记忆伪装成成果烧掉轮数。
-- ✅ **0.2.3 实盘复验**(DeepSeek):三个定时器场景各 3 轮,set_timer 合规率 8/9
-  (修复前工具路径 1/3),恢复到 0.2.0 水平。复验中另发现并修复:工具轮后模型
-  常吐未闭合 `<reply>`/`<thinking>`,旧解析器会把裸标签泄给用户(约 3/9);
-  `_parse_generation` 已容错未闭合/残缺标签,修复后回复不再泄漏任何裸标签。
-
-> 注意:`deepseek-v4-pro` 默认开启原生推理。本项目的"脑内剧场"是 prompt 内的
-> 角色扮演 `<thinking>` 块(她的内心独白),与模型原生推理不同,因此生成/抽取/摘要
-> 三处都显式 `thinking=False`(`{"thinking":{"type":"disabled"}}`),避免原生推理
-> 抢占预算或抑制 in-band 独白。要开启原生推理可传 `thinking=True, reasoning_effort="high"`。
-
----
-
-## 设计自检清单(每个模块都对一遍)
-
-- 内容只存一份(L3 `memories.content`)?其它结构只持 id?→ ✅
-- 进向量的文本是纯内容,没拼 tag/时间/情绪?→ ✅(见 `l3_store.write_memory` 双向量分别取纯内容 / 纯情绪+reasoning)
-- 主键 UUIDv7、时间查询走独立 `ts_ms` 索引列?→ ✅
-- 热路径调 LLM 了吗?→ ❌(打标是确定性 kNN/centroid;LLM 只在 Dream)
-- 每个新结构能说出它回答的精确查询?→ 见上表"角色"列
+- No user accounts; access control is per-chat tokens intended for a closed test.
+- No public deployment; `docker-compose.yml` only provides the database.
+- No retry/backoff around LLM calls beyond the extractor's single retry.
+- The frontend is a debugging surface, not a product UI.
+- Persona and prompts are Chinese-only.
